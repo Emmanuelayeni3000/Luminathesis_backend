@@ -6,5 +6,6 @@ set -o errexit
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
 
-# Install dependencies
-uv pip install --system --no-cache-dir -r requirements.txt
+# Install dependencies into active virtual environment
+uv pip install --no-cache-dir -r requirements.txt
+
