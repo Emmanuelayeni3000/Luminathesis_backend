@@ -164,8 +164,14 @@ async def editor_node(state: dict) -> dict:
     logger.info("[Editor] Running Llama 3.3 editing pass…")
     response = await llm.ainvoke(messages)
 
-    parsed = _parse_json_from_response(response.content)
-    final = parsed.get("final_output", parsed.get("raw", response.content))
+    final = response.content.strip()
+    if final.startswith("```markdown"):
+        final = final[11:].strip()
+    elif final.startswith("```"):
+        final = final[3:].strip()
+    if final.endswith("```"):
+        final = final[:-3].strip()
+        
     logger.info("[Editor] Done ✓ — %d chars", len(final))
 
     return {**state, "final_output": final}

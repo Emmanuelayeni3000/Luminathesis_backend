@@ -13,16 +13,18 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     llama_cloud_api_key: str = ""
     semantic_scholar_api_key: str = ""
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
 
     # Database
     database_url: str = ""
 
     # CORS
-    frontend_url: str = "http://localhost:3000"
+    frontend_url: str = "https://luminathesis-ai.vercel.app"
 
     # Model identifiers
     extractor_model: str = "llama-3.3-70b-versatile"
-    architect_model: str = "deepseek-r1-distill-llama-70b"
+    architect_model: str = "qwen/qwen3-32b"
     editor_model: str = "llama-3.3-70b-versatile"
 
     # Embedding

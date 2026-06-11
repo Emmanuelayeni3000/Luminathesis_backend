@@ -85,8 +85,9 @@ async def store_chunks(session_id: str, chunks: list[dict]) -> int:
     if not chunks:
         return 0
 
+    # We get pool inside the retry loop instead
     try:
-        pool = get_pool()
+        get_pool()
     except RuntimeError:
         logger.warning("DB pool unavailable — skipping vector storage")
         return 0
@@ -112,15 +113,27 @@ async def store_chunks(session_id: str, chunks: list[dict]) -> int:
         for i in range(len(chunks))
     ]
 
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.executemany(
-                """
-                INSERT INTO document_chunks (session_id, content, source, embedding)
-                VALUES (%s, %s, %s, %s::vector)
-                """,
-                rows,
-            )
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            pool = get_pool()
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.executemany(
+                        """
+                        INSERT INTO document_chunks (session_id, content, source, embedding)
+                        VALUES (%s, %s, %s, %s::vector)
+                        """,
+                        rows,
+                    )
+            break
+        except Exception as e:
+            import asyncio
+            logger.warning("DB insert failed on attempt %d: %s", attempt + 1, e)
+            if attempt == max_retries - 1:
+                logger.error("Failed to store chunks after %d attempts", max_retries)
+                raise
+            await asyncio.sleep(1 + attempt)
 
     logger.info("Stored %d chunks for session %s", len(rows), session_id)
     return len(rows)
@@ -148,18 +161,31 @@ async def similarity_search(
         [query], normalize_embeddings=True
     )[0]
 
-    async with pool.connection() as conn:
-        rows = await conn.execute(
-            """
-            SELECT content
-            FROM document_chunks
-            WHERE session_id = %s
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-            """,
-            (session_id, query_embedding.tolist(), candidate_limit),
-        )
-        results = await rows.fetchall()
+    max_retries = 3
+    results = []
+    for attempt in range(max_retries):
+        try:
+            async with pool.connection() as conn:
+                rows = await conn.execute(
+                    """
+                    SELECT content
+                    FROM document_chunks
+                    WHERE session_id = %s
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (session_id, query_embedding.tolist(), candidate_limit),
+                )
+                results = await rows.fetchall()
+            break
+        except Exception as e:
+            import asyncio
+            logger.warning("DB similarity_search failed on attempt %d: %s", attempt + 1, e)
+            if attempt == max_retries - 1:
+                logger.error("Failed to query database in similarity_search after %d attempts", max_retries)
+                results = []
+            else:
+                await asyncio.sleep(0.5 * (attempt + 1))
 
     raw_texts = [r[0] for r in results]
     if not raw_texts:
@@ -204,18 +230,31 @@ async def similarity_search_with_sources(
         [query], normalize_embeddings=True
     )[0]
 
-    async with pool.connection() as conn:
-        rows = await conn.execute(
-            """
-            SELECT content, source
-            FROM document_chunks
-            WHERE session_id = %s
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-            """,
-            (session_id, query_embedding.tolist(), candidate_limit),
-        )
-        results = await rows.fetchall()
+    max_retries = 3
+    results = []
+    for attempt in range(max_retries):
+        try:
+            async with pool.connection() as conn:
+                rows = await conn.execute(
+                    """
+                    SELECT content, source
+                    FROM document_chunks
+                    WHERE session_id = %s
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (session_id, query_embedding.tolist(), candidate_limit),
+                )
+                results = await rows.fetchall()
+            break
+        except Exception as e:
+            import asyncio
+            logger.warning("DB similarity_search_with_sources failed on attempt %d: %s", attempt + 1, e)
+            if attempt == max_retries - 1:
+                logger.error("Failed to query database in similarity_search_with_sources after %d attempts", max_retries)
+                results = []
+            else:
+                await asyncio.sleep(0.5 * (attempt + 1))
 
     raw_candidates = [{"content": r[0], "source": r[1]} for r in results]
     if not raw_candidates:

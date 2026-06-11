@@ -22,6 +22,10 @@ BUZZWORD_BLOCKLIST = [
     "innovative solution", "novel approach",
     "it is evident that", "it is clear that",
     "needless to say",
+    "moreover", "furthermore", "thus", "hence", "consequently", "therefore",
+    "in conclusion", "to summarize", "firstly", "secondly", "thirdly",
+    "ultimately", "additionally", "in addition", "subsequently", "overall",
+    "it is imperative", "undeniably", "indubitably"
 ]
 
 EDITOR_SYSTEM_PROMPT = f"""\
@@ -39,16 +43,21 @@ Replace every occurrence with precise, formal academic language:
 - Use hedging language appropriate to empirical claims
   (e.g., "the findings suggest", "evidence indicates", "it appears that").
 - Prefer active voice for objectives; passive for methodology descriptions.
-- Ensure all inline citations [Author, Year] are preserved exactly.
-- Target reading level: academic journal (Flesch-Kincaid Grade 16+).
-- Paragraphs: 4–6 sentences each; no orphan sentences.
-- Do NOT add new content, facts, or citations — only refine prose.
+- Ensure all inline citations [Author, Year] or (Source: document.docx) are preserved exactly.
+- Expand, develop, and enrich the draft text. Elaborate on theoretical claims, add transitional depth, and maximize the academic vocabulary and sentence complexity.
+- Write with maximum academic depth. Ensure the arguments are fully fleshed out and transition seamlessly, maintaining high information density throughout.
+
+## Humanization & Anti-AI Detection Rules (CRITICAL)
+- **High Burstiness**: You MUST vary sentence lengths drastically. Mix short, punchy sentences (5-10 words) with long, complex, flowing sentences (25+ words) featuring nested clauses. NEVER write more than two sentences of similar length in a row.
+- **High Perplexity**: Use unpredictable, highly specific vocabulary. Avoid repetitive academic tropes and formulaic structures.
+- **No Predictable Transitions**: Do NOT use standard transitional adverbs (see blocklist). Instead, use thematic bridges (e.g., connecting the subject of the previous sentence to the object of the next).
+- **Anti-Plagiarism / Zero-Copy Policy**: You MUST synthesize ideas using entirely original phrasing. NEVER copy more than 3 consecutive words from the source text or draft (unless it is a proper noun, technical term, or directly cited). Paraphrase aggressively.
+- **Voice**: Ensure the prose flows naturally with a highly authoritative yet human cadence. Avoid robotic, overly structured parallelisms or repetitive paragraph openings.
 
 ## Output Format
-Return a single JSON object:
-{{
-  "final_output": "<the complete, unified Introduction chapter in clean academic prose>"
-}}
+Return ONLY the complete, unified Introduction chapter in clean academic prose, formatted in Markdown.
+Do NOT wrap your response in JSON. Do NOT include any introductory or concluding conversational text.
+Just output the raw markdown chapter directly.
 
 Structure the output as:
 1. Background (refined)

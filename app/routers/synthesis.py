@@ -11,18 +11,25 @@ Supports both:
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
 
-from app.models import SynthesizeRequest, SynthesisResult, ChatRequest, ChatResponse
+from app.models import SynthesizeRequest, SynthesisResult, ChatRequest, ChatResponse, ExportRequest
+from app.services.document_generator import generate_docx, generate_pdf
 from app.services.embeddings import similarity_search, similarity_search_with_sources
 from app.services.graph import run_synthesis, stream_synthesis
+from app.services.intent import classify_chat_intent
+from app.services.scholar import quick_search
 from app.config import get_settings
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Hard cap on the user's chat message length. Generous enough for a pasted
+# thesis section, but prevents runaway prompts from extreme pastes.
+MAX_CHAT_MESSAGE_CHARS = 12000
 
 
 @router.post("/synthesize")
@@ -100,68 +107,6 @@ async def synthesize(body: SynthesizeRequest):
     )
 
 
-async def check_thesis_intent(message: str, history: list[dict]) -> tuple[bool, str | None]:
-    """
-    Classify whether the user's query expresses an intent to start thesis synthesis/research.
-    Returns (is_thesis_intent, extracted_topic).
-    """
-    settings = get_settings()
-    llm = ChatGroq(
-        model=settings.editor_model,
-        temperature=0.0,
-        api_key=settings.groq_api_key,
-    )
-    
-    # Format recent history for the classifier context
-    history_context = []
-    for h in history[-4:]:
-        role = h.get("role")
-        content = h.get("content", "")
-        history_context.append(f"{role.upper()}: {content}")
-    history_str = "\n".join(history_context)
-    
-    system_prompt = (
-        "You are an academic intent classifier. Your task is to analyze the user's latest message "
-        "and determine if they are proposing, requesting, or starting a thesis/dissertation research synthesis session on a specific topic.\n\n"
-        "Thesis synthesis intent includes requests to:\n"
-        "- Research a specific thesis topic (e.g. 'I want to write about X', 'Let's do research on Y').\n"
-        "- Run the synthesis/generation pipeline on an academic area.\n"
-        "- Brainstorming a specific topic that they clearly want to research right now.\n\n"
-        "Non-thesis intent includes:\n"
-        "- General greetings (e.g. 'hi', 'hello').\n"
-        "- Generic conceptual questions (e.g. 'what is a literature review?', 'how do I structure a thesis?').\n"
-        "- General conversation or questions unrelated to a specific topic they want to research right now.\n\n"
-        f"Conversation History:\n{history_str}\n\n"
-        f"Latest User Message: \"{message}\"\n\n"
-        "You MUST respond ONLY with a JSON object in the following format. Do not write any other explanation or text:\n"
-        "{\n"
-        "  \"is_thesis_intent\": true or false,\n"
-        "  \"extracted_topic\": \"A clean, formal, concise thesis topic/title string of 10+ characters (only if is_thesis_intent is true, otherwise null)\"\n"
-        "}"
-    )
-    
-    try:
-        response = await llm.ainvoke([SystemMessage(content=system_prompt)])
-        content = response.content.strip()
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
-        
-        import json
-        data = json.loads(content)
-        is_intent = data.get("is_thesis_intent", False)
-        topic = data.get("extracted_topic")
-        
-        if is_intent and topic and len(topic.strip()) >= 10:
-            return True, topic.strip()
-        return False, None
-    except Exception as e:
-        logger.error("Thesis intent classification failed: %s", e)
-        return False, None
-
-
 @router.post("/chat", response_model=ChatResponse)
 async def chat_advisor(body: ChatRequest) -> ChatResponse:
     """
@@ -170,10 +115,27 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
     and generating precise source citations/references.
     """
     logger.info("Chat advisor request | session: %s | msg: %s", body.session_id, body.message[:60])
-    
-    # ── Check for thesis synthesis intent first ───────────────────────────────
-    is_thesis, topic = await check_thesis_intent(body.message, body.history)
-    if is_thesis and topic:
+
+    # ── Edge case: cap extreme pastes so the prompt stays well-formed ─────────
+    user_message = body.message
+    truncated_notice = ""
+    if len(user_message) > MAX_CHAT_MESSAGE_CHARS:
+        user_message = user_message[:MAX_CHAT_MESSAGE_CHARS]
+        truncated_notice = (
+            f"\n\nNOTE: The user's message was truncated to {MAX_CHAT_MESSAGE_CHARS} characters because it "
+            "exceeded the processing limit. If your answer seems incomplete relative to a long pasted text, "
+            "mention that you can only see the first portion and offer to continue with the rest."
+        )
+
+    # ── Classify intent and rewrite the query for retrieval ───────────────────
+    classification = await classify_chat_intent(user_message, body.history)
+    intent = classification["intent"]
+    topic = classification["synthesis_topic"]
+    search_query = classification["search_query"]
+    logger.info("Classified intent: %s | search_query: %s", intent, search_query[:80])
+
+    # ── Thesis synthesis intent: hand off to the LangGraph pipeline ───────────
+    if intent == "thesis_synthesis" and topic:
         logger.info("Detected thesis intent for topic: %s", topic)
         return ChatResponse(
             response=(
@@ -181,76 +143,226 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
                 "I am triggering the LuminaThesis synthesis pipeline right now to harvest academic literature "
                 "from Semantic Scholar and structure your chapter. Sit tight!"
             ),
+            key_takeaways=[],
+            suggested_followups=[],
             sources=[],
             trigger_synthesis=True,
             synthesis_topic=topic
         )
 
-    # 1. Retrieve context chunks with their metadata sources
-    try:
-        context_items = await similarity_search_with_sources(
-            session_id=body.session_id,
-            query=body.message,
-            k=6
-        )
-        logger.info("Retrieved %d context chunks for chat advisor", len(context_items))
-    except Exception as e:
-        logger.error("Chat context retrieval failed: %s", e)
-        context_items = []
+    # 1. Retrieve context chunks with their metadata sources (skip for off-topic chit-chat)
+    context_items: list[dict] = []
+    if intent != "off_topic":
+        try:
+            context_items = await similarity_search_with_sources(
+                session_id=body.session_id,
+                query=search_query,
+                k=6
+            )
+            logger.info("Retrieved %d context chunks for chat advisor", len(context_items))
+        except Exception as e:
+            logger.error("Chat context retrieval failed: %s", e)
+            context_items = []
+
+        # 1b. Literature search intent: augment with a live Semantic Scholar lookup
+        if intent == "literature_search":
+            try:
+                live_papers = await quick_search(search_query, limit=5)
+                for p in live_papers:
+                    author_str = f"{p['authors'][0].split()[-1]} et al." if p.get("authors") else "Unknown authors"
+                    context_items.append({
+                        "content": f"{p['title']} ({p.get('year', 'n.d.')}) — {author_str}\nAbstract: {p['abstract']}",
+                        "source": "Semantic Scholar (live search)",
+                    })
+                logger.info("Live literature search returned %d papers", len(live_papers))
+            except Exception as e:
+                logger.warning("Live literature search failed: %s", e)
 
     # 2. Setup prompt and guidelines for RAG + Anti-hallucination + References
     context_text_blocks = []
     unique_sources = set()
     for item in context_items:
         source_name = item.get("source", "Unknown Document")
+        # Sanitize Supabase URLs
+        if "supabase.co" in source_name:
+            import urllib.parse
+            import os
+            try:
+                parsed_url = urllib.parse.urlparse(source_name)
+                basename = os.path.basename(parsed_url.path)
+                # Remove leading uuid prefix if exists (uuid_filename.ext)
+                parts = basename.split("_", 1)
+                if len(parts) == 2 and len(parts[0]) == 36:
+                    source_name = parts[1]
+                else:
+                    source_name = basename
+            except:
+                source_name = "Uploaded Document"
+
         unique_sources.add(source_name)
         context_text_blocks.append(f"Source: {source_name}\nContent: {item.get('content')}")
-        
+
     context_text = "\n\n---\n\n".join(context_text_blocks)
-    
-    user_name = body.user_name or "Emily"
+
+    # Edge-case guidance appended to the system prompt based on intent/context
+    extra_notes = ""
+    if intent == "off_topic":
+        extra_notes += (
+            "\n\nNOTE — OFF-TOPIC MESSAGE: This message appears unrelated to the user's academic research or "
+            "thesis work. Answer briefly and helpfully using your general knowledge if appropriate, set "
+            "'sources' to an empty list and 'key_takeaways' to an empty list, and use 'suggested_followups' "
+            "to gently steer the conversation back to their research."
+        )
+    elif not context_items:
+        extra_notes += (
+            "\n\nNOTE — NO CONTEXT FOUND: No documents have been uploaded/indexed for this session, or none were "
+            "relevant to this query. Do NOT use 'I cannot find that in the uploaded documents' as a generic "
+            "deflection. If the user is specifically asking about 'my draft', 'my documents', or 'my uploads', "
+            "let them know nothing relevant has been uploaded yet and suggest uploading it. For all other "
+            "questions, use your own academic knowledge to give a thorough, helpful answer."
+        )
+    if intent == "literature_search":
+        extra_notes += (
+            "\n\nNOTE — LIVE LITERATURE SEARCH: Some RETRIEVED CONTEXT entries are marked 'Source: Semantic "
+            "Scholar (live search)' — these are real-time results fetched for this exact query. Synthesize them "
+            "alongside any uploaded-document context to recommend relevant literature, citing titles and years."
+        )
+    extra_notes += truncated_notice
+
+    user_name = body.user_name or "Scholar"
     system_prompt = (
-        f"You are LuminaThesis Advisor, a helpful academic assistant guiding a PhD student ({user_name}) through their thesis chapter.\n"
-        f"Your goal is to answer their questions with absolute academic integrity, avoiding any hallucinations.\n\n"
+        f"You are Lumina, a highly intelligent, expert PhD academic advisor, research assistant, and warm intellectual partner. You are chatting with {user_name}.\n"
+        "Your personality should be empathetic, extremely helpful, collaborative, and deeply analytical. You should feel like a true pair-researcher who reasons ALONG with the user.\n"
+        "Your goal is to be a brilliant conversational partner: provide deep insights, complement the user's ideas, explore concepts collaboratively, ask thought-provoking questions, and give highly intelligent but accessible guidance.\n"
+        "Always maintain a warm, encouraging, and highly collaborative tone. Make the user feel heard, supported, and intellectually stimulated. You are not just a rigid academic bot; you are a mentor and a brainstorming partner.\n\n"
+        "CRITICAL INSTRUCTIONS FOR FORMATTING AND UX:\n"
+        "A. Apply Markdown formatting and lists ONLY to the main 'response' field. Do NOT apply bullet points or markdown to the strings inside 'key_takeaways' or 'suggested_followups' JSON arrays.\n"
+        "B. In the 'response' field, ALWAYS use beautiful Markdown formatting. Use **bolding**, *italics*, and `code blocks` where appropriate.\n"
+        "C. In the 'response' field, whenever listing items, topics, or steps, ALWAYS use bullet points (-) or numbered lists (1. 2. 3.) with line breaks between them.\n"
+        "D. Break up large blocks of text in the 'response' field into smaller, easily readable paragraphs. A massive wall of text is completely unacceptable.\n"
+        "E. Use markdown headers (###) to separate distinct sections of your 'response' field when discussing multiple different concepts.\n"
+        "F. NEVER wrap list items, headings, or table-of-contents entries in markdown links (e.g. do NOT write '[Introduction](#introduction)'). This is a chat message, not a navigable document, so anchor links go nowhere and confuse the user. Write outline/ToC entries as plain bold or numbered text instead, e.g. '1. **Introduction**'. Only use markdown links ([text](url)) for real, full external URLs (e.g. https://...).\n\n"
         "CRITICAL INSTRUCTIONS FOR ANTI-HALLUCINATION & CITATIONS:\n"
-        f"1. If {user_name}'s question is about their uploaded files or their specific draft, you MUST base your answer strictly on the provided 'RETRIEVED CONTEXT' chunks below.\n"
+        f"1. If {user_name}'s question refers to their uploaded files or draft, you MUST base your answer strictly on the provided 'RETRIEVED CONTEXT' chunks below.\n"
         "2. If you use information from a context chunk, you MUST cite its 'Source' inline parenthetically, for example: (Source: remote_learning_trends.pdf) or (Source: semantic_scholar).\n"
-        f"3. If the answer cannot be found in the RETRIEVED CONTEXT, state clearly: 'I cannot find that information in the uploaded research documents or draft chunks.' - Do not make up or hallucinate details.\n"
-        "4. If you used any RETRIEVED CONTEXT to answer their question, you MUST append a References section at the very end of your response formatted exactly like this:\n\n"
-        "## References\n"
-        "- **[Source Name/URL/Filename]** (Inline Citation Name)\n\n"
-        f"5. If their question is a general academic query (e.g. general definitions, formatting guides, Python/LaTeX help) and doesn't refer to the uploaded texts, you may answer using your general knowledge but clarify that it is general advice (and do not add a References section).\n"
-        "6. Always maintain a professional, encouraging academic tone.\n\n"
+        f"3. If the answer to a document-specific query cannot be found in the RETRIEVED CONTEXT, state clearly: 'I cannot find that information in the uploaded research documents.'\n"
+        "4. In your structured response, put the main academic answer in the 'response' field.\n"
+        "5. Distill 3-5 key points from your answer and place them in the 'key_takeaways' list. Each item in this list must be a plain, raw text sentence without any leading bullet characters (like '-', '*', '1.', etc.) or markdown formatting.\n"
+        "6. Provide 2-3 brilliant follow-up questions the user should consider asking next in the 'suggested_followups' list. Each item must be a plain, raw text question without any leading bullet characters or markdown formatting.\n"
+        "7. You MUST populate the 'sources' field with the list of cited source filenames (or an empty list if none were cited), populate 'trigger_synthesis' with false, and populate 'synthesis_topic' with an empty string \"\". All fields in the schema are strictly required and must be present in your JSON output.\n"
+        "8. For general discussions, brainstorming, or queries unrelated to the uploaded texts, you are encouraged to use your vast general knowledge to provide brilliant, comprehensive, and helpful answers. Do not limit yourself if the context is empty.\n"
+        "9. REASON DEEPLY: Avoid simple summaries or brief answers. Provide highly detailed, analytical, and academically rigorous responses that trace theoretical concepts, propose concrete methodology steps, and offer profound insights.\n"
+        "10. ALWAYS USE PREVIOUS CHAT HISTORY to maintain context. Remember what the user said in prior messages and weave it into your responses to show you are following their train of thought over time.\n\n"
         f"RETRIEVED CONTEXT CHUNKS:\n{context_text or '(No uploaded research context found for this query)'}"
+        f"{extra_notes}"
     )
 
     # 3. Build chat history messages
     messages = [SystemMessage(content=system_prompt)]
-    for h in body.history[-8:]:
+    for h in body.history[-10:]:
         role = h.get("role")
         content = h.get("content", "")
         if role == "user":
             messages.append(HumanMessage(content=content))
         elif role in ("assistant", "ai"):
             messages.append(AIMessage(content=content))
-            
+
     # Add current user message
-    messages.append(HumanMessage(content=body.message))
+    messages.append(HumanMessage(content=user_message))
 
     # 4. Invoke LLM (Llama 3.3)
     try:
         settings = get_settings()
         llm = ChatGroq(
             model=settings.editor_model,
-            temperature=0.4,
+            temperature=0.6,  # Higher temperature for more creative/deep reasoning
             api_key=settings.groq_api_key,
         )
-        response = await llm.ainvoke(messages)
         
-        return ChatResponse(
-            response=response.content,
-            sources=list(unique_sources)
-        )
+        structured_llm = llm.with_structured_output(ChatResponse, method="json_mode")
+        response_data = await structured_llm.ainvoke(messages)
+        
+        # Override fields controlled by the backend
+        response_data.sources = list(unique_sources)
+        response_data.trigger_synthesis = False
+        response_data.synthesis_topic = ""
+        
+        return response_data
     except Exception as e:
         logger.error("Chat advisor LLM invocation failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Advisor service error: {e}")
+
+
+@router.post("/export/docx")
+async def export_docx(body: ExportRequest):
+    """
+    Export the synthesized thesis chapter to a professionally styled Word document.
+    """
+    logger.info("Exporting thesis to DOCX | topic: %s", body.topic[:60])
+    try:
+        doc_data = {
+            "topic": body.topic,
+            "background": body.background,
+            "problem_statement": body.problem_statement,
+            "research_questions": body.research_questions,
+            "objectives": body.objectives,
+            "hypotheses": body.hypotheses,
+            "scope": body.scope,
+            "final_output": body.final_output,
+        }
+        buffer = generate_docx(doc_data)
+        
+        import re
+        safe_topic = re.sub(r'[^a-zA-Z0-9_-]', '_', body.topic[:40]).strip("_") or "thesis_chapter"
+        filename = f"{safe_topic}.docx"
+        
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers=headers
+        )
+    except Exception as e:
+        logger.error("Failed to generate DOCX: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to generate DOCX document: {e}")
+
+
+@router.post("/export/pdf")
+async def export_pdf(body: ExportRequest):
+    """
+    Export the synthesized thesis chapter to a professionally styled PDF document.
+    """
+    logger.info("Exporting thesis to PDF | topic: %s", body.topic[:60])
+    try:
+        doc_data = {
+            "topic": body.topic,
+            "background": body.background,
+            "problem_statement": body.problem_statement,
+            "research_questions": body.research_questions,
+            "objectives": body.objectives,
+            "hypotheses": body.hypotheses,
+            "scope": body.scope,
+            "final_output": body.final_output,
+        }
+        buffer = generate_pdf(doc_data)
+        
+        import re
+        safe_topic = re.sub(r'[^a-zA-Z0-9_-]', '_', body.topic[:40]).strip("_") or "thesis_chapter"
+        filename = f"{safe_topic}.pdf"
+        
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/pdf",
+            headers=headers
+        )
+    except Exception as e:
+        logger.error("Failed to generate PDF: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF document: {e}")
+

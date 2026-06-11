@@ -8,16 +8,37 @@ Pipeline:
   4. Embed with all-MiniLM-L6-v2 and store in Neon pgvector
 """
 import logging
+import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 
 from app.models import InitSessionRequest, InitSessionResponse
-from app.services.parser import parse_documents
+from app.services.parser import parse_documents, upload_file_to_supabase
 from app.services.scholar import harvest_abstracts, format_abstracts_as_context
 from app.services.embeddings import chunk_text, store_chunks
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """
+    Upload a file to Supabase storage via backend admin credentials (bypassing client RLS policies).
+    Returns the public URL of the uploaded file.
+    """
+    try:
+        import re
+        file_bytes = await file.read()
+        # Clean the original filename to remove special characters and spaces
+        safe_orig_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
+        random_filename = f"{uuid.uuid4()}_{safe_orig_name}"
+        
+        public_url = await upload_file_to_supabase(file_bytes, random_filename)
+        return {"public_url": public_url}
+    except Exception as e:
+        logger.error("Failed to upload file to Supabase: %s", e)
+        raise HTTPException(status_code=500, detail=f"File upload failed: {e}")
 
 
 @router.post("/initialize_session", response_model=InitSessionResponse)
