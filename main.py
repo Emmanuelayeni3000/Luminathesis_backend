@@ -12,6 +12,18 @@ Memory budget (Render 512 MB):
   - FastAPI + dependencies   ≈  80 MB
   - Per-request headroom     ≈ 340 MB
 """
+import os
+
+# Must be set before torch (via sentence-transformers) is imported below —
+# otherwise torch's OpenMP/MKL thread-pool init can hang indefinitely on
+# Render's CPU-quota-limited instances, blocking startup before the app
+# ever binds a port.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 import logging
 from contextlib import asynccontextmanager
 
