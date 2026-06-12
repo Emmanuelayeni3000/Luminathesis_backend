@@ -37,8 +37,12 @@ certifi==2026.5.20
     #   httpx
     #   llama-cloud
     #   requests
+cffi==2.0.0
+    # via cryptography
 charset-normalizer==3.4.7
-    # via requests
+    # via
+    #   reportlab
+    #   requests
 click==8.4.1
     # via
     #   huggingface-hub
@@ -51,6 +55,8 @@ colorama==0.4.6
     #   click
     #   griffecli
     #   tqdm
+cryptography==48.0.1
+    # via pyjwt
 dataclasses-json==0.6.7
     # via llama-index-core
 deprecated==1.3.1
@@ -58,6 +64,10 @@ deprecated==1.3.1
     #   banks
     #   llama-index-core
     #   llama-index-instrumentation
+deprecation==2.1.0
+    # via
+    #   postgrest
+    #   storage3
 dirtyjson==1.0.8
     # via llama-index-core
 distro==1.9.0
@@ -101,8 +111,12 @@ h11==0.16.0
     # via
     #   httpcore
     #   uvicorn
+h2==4.3.0
+    # via httpx
 hf-xet==1.5.0
     # via huggingface-hub
+hpack==4.1.0
+    # via h2
 httpcore==1.0.9
     # via httpx
 httpx==0.28.1
@@ -114,11 +128,18 @@ httpx==0.28.1
     #   langsmith
     #   llama-cloud
     #   llama-index-core
+    #   postgrest
+    #   storage3
+    #   supabase
+    #   supabase-auth
+    #   supabase-functions
 huggingface-hub==1.18.0
     # via
     #   sentence-transformers
     #   tokenizers
     #   transformers
+hyperframe==6.1.0
+    # via h2
 idna==3.18
     # via
     #   anyio
@@ -185,6 +206,8 @@ llama-index-workflows==2.20.0
     # via llama-index-core
 llama-parse==0.6.94
     # via luminathesis-backend (pyproject.toml)
+lxml==6.1.1
+    # via python-docx
 markdown-it-py==4.2.0
     # via rich
 markupsafe==3.0.3
@@ -232,6 +255,7 @@ ormsgpack==1.12.2
     # via langgraph-checkpoint
 packaging==26.2
     # via
+    #   deprecation
     #   huggingface-hub
     #   langchain-core
     #   langsmith
@@ -242,12 +266,16 @@ packaging==26.2
 pgvector==0.3.6
     # via langchain-postgres
 pillow==12.2.0
-    # via llama-index-core
+    # via
+    #   llama-index-core
+    #   reportlab
 platformdirs==4.10.0
     # via
     #   banks
     #   llama-cloud-services
     #   llama-index-core
+postgrest==2.31.0
+    # via supabase
 propcache==0.5.2
     # via
     #   aiohttp
@@ -262,6 +290,8 @@ psycopg-pool==3.3.1
     # via
     #   luminathesis-backend (pyproject.toml)
     #   langchain-postgres
+pycparser==3.0
+    # via cffi
 pydantic==2.13.4
     # via
     #   luminathesis-backend (pyproject.toml)
@@ -277,29 +307,43 @@ pydantic==2.13.4
     #   llama-index-core
     #   llama-index-instrumentation
     #   llama-index-workflows
+    #   postgrest
     #   pydantic-settings
+    #   realtime
+    #   storage3
+    #   supabase-auth
 pydantic-core==2.46.4
     # via pydantic
 pydantic-settings==2.14.1
     # via luminathesis-backend (pyproject.toml)
 pygments==2.20.0
     # via rich
+pyjwt==2.13.0
+    # via supabase-auth
+python-docx==1.2.0
+    # via luminathesis-backend (pyproject.toml)
 python-dotenv==1.2.2
     # via
     #   luminathesis-backend (pyproject.toml)
     #   llama-cloud-services
     #   pydantic-settings
+python-multipart==0.0.32
+    # via luminathesis-backend (pyproject.toml)
 pyyaml==6.0.3
     # via
     #   huggingface-hub
     #   langchain-core
     #   llama-index-core
     #   transformers
+realtime==2.31.0
+    # via supabase
 regex==2026.5.9
     # via
     #   nltk
     #   tiktoken
     #   transformers
+reportlab==4.5.1
+    # via luminathesis-backend (pyproject.toml)
 requests==2.34.2
     # via
     #   flashrank
@@ -335,6 +379,16 @@ sqlalchemy==2.0.50
     #   llama-index-core
 starlette==1.2.1
     # via fastapi
+storage3==2.31.0
+    # via supabase
+strenum==0.4.15
+    # via supabase-functions
+supabase==2.31.0
+    # via luminathesis-backend (pyproject.toml)
+supabase-auth==2.31.0
+    # via supabase
+supabase-functions==2.31.0
+    # via supabase
 sympy==1.14.0
     # via torch
 tenacity==9.1.4
@@ -380,6 +434,8 @@ typing-extensions==4.15.0
     #   psycopg-pool
     #   pydantic
     #   pydantic-core
+    #   python-docx
+    #   realtime
     #   sentence-transformers
     #   sqlalchemy
     #   torch
@@ -408,6 +464,7 @@ websockets==15.0.1
     # via
     #   langgraph-sdk
     #   langsmith
+    #   realtime
 wrapt==2.2.1
     # via
     #   deprecated
@@ -417,6 +474,11 @@ xxhash==3.7.0
     #   langgraph
     #   langsmith
 yarl==1.24.2
-    # via aiohttp
+    # via
+    #   aiohttp
+    #   postgrest
+    #   storage3
+    #   supabase
+    #   supabase-functions
 zstandard==0.25.0
     # via langsmith
