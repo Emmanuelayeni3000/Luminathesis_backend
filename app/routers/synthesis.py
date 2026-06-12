@@ -169,10 +169,11 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
             try:
                 live_papers = await quick_search(search_query, limit=5)
                 for p in live_papers:
-                    author_str = f"{p['authors'][0].split()[-1]} et al." if p.get("authors") else "Unknown authors"
+                    first_author = (p["authors"][0].split() if p.get("authors") else [])
+                    author_str = f"{first_author[-1]} et al." if first_author else "Unknown authors"
                     context_items.append({
                         "content": f"{p['title']} ({p.get('year', 'n.d.')}) — {author_str}\nAbstract: {p['abstract']}",
-                        "source": "Semantic Scholar (live search)",
+                        "source": f"{p.get('source', 'Semantic Scholar')} (live search)",
                     })
                 logger.info("Live literature search returned %d papers", len(live_papers))
             except Exception as e:

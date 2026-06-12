@@ -25,7 +25,7 @@ LuminaThesis is a high-performance Python FastAPI backend that orchestrates lite
 graph TD
   A[Next.js Frontend] -->|1. Uploads PDF/Docs| B(Supabase Storage)
   A -->|2. Topic + Doc URLs| C[FastAPI Server]
-  C -->|3. Fetch Abstracts| D[Semantic Scholar API]
+  C -->|3. Fetch Abstracts| D[Semantic Scholar + OpenAlex APIs]
   C -->|4. Parse Documents| E[LlamaParse Cloud API]
   C -->|5. Chunk & Embed| F[sentence-transformers]
   C -->|6. Store Vectors| G[(Neon PostgreSQL + pgvector)]
@@ -48,7 +48,7 @@ Every `/api/chat` turn is first triaged by a lightweight intent classifier (`app
 graph TD
   A[User Message + History] --> B[classify_chat_intent]
   B -->|thesis_synthesis| C[Trigger LangGraph Synthesis Pipeline]
-  B -->|literature_search| D[Vector Search + Live Semantic Scholar quick_search]
+  B -->|literature_search| D[Vector Search + Live quick_search across Semantic Scholar & OpenAlex]
   B -->|general_chat| E[Vector Search Only]
   B -->|off_topic| F[Skip Retrieval]
   D --> G[Editor LLM — json_mode structured output]
@@ -58,7 +58,7 @@ graph TD
 ```
 
 - **Intent classification & query rewriting**: a single fast call resolves pronouns/follow-ups ("what about its limitations?") into standalone retrieval queries and routes the turn to one of `thesis_synthesis`, `literature_search`, `general_chat`, or `off_topic`. The synthesis pipeline only fires on an explicit, unambiguous request — outline/table-of-contents/brainstorming requests stay conversational.
-- **Live literature lookups**: `literature_search` turns are augmented with a real-time Semantic Scholar query (`quick_search`) alongside the user's indexed documents.
+- **Live literature lookups**: `literature_search` turns are augmented with a real-time `quick_search` across Semantic Scholar and OpenAlex, deduplicated by DOI/title, alongside the user's indexed documents.
 - **Resilient structured output**: chat responses are generated with Groq `json_mode` (instead of strict tool-calling) plus Pydantic coercion validators, so malformed `key_takeaways`/`suggested_followups` fields no longer crash the endpoint.
 
 ---
@@ -70,13 +70,13 @@ graph TD
   - **Architect Node (Qwen3 32B)**: Leverages deep chain-of-thought thinking to draft structured Research Questions, SMART Objectives, and Methodology.
   - **Editor Node (Llama 3.3)**: Harmonizes tone and filters out overused AI buzzwords.
   - **Critic Loop**: Intercepts prose and triggers self-correction loops if buzzwords or quality standards are violated.
-- **📚 Academic Harvester**: Queries Semantic Scholar to pull relevant paper abstracts based on the user's research topic.
+- **📚 Academic Harvester**: Queries Semantic Scholar and OpenAlex in parallel, deduplicated by DOI/title, to pull relevant paper abstracts from multiple sources based on the user's research topic.
 - **⚡ Advanced RAG Pipeline**:
   - Embedding Model: `all-MiniLM-L6-v2` (384-dimensional).
   - Semantic Re-ranking: Uses `flashrank` (`ms-marco-TinyBERT-L-2-v2`) to prioritize the top relevant retrieved chunks.
   - Contextual Citations: Returns inline parenthetical citations dynamically mapped to original file sources and web URLs.
 - **🧭 Smart Chat Intent Routing**: Every chat turn is classified (`thesis_synthesis` / `literature_search` / `general_chat` / `off_topic`) and the latest message is rewritten into a standalone, history-aware retrieval query before vector search runs.
-- **🔎 Live Literature Lookups in Chat**: `literature_search` turns trigger a real-time Semantic Scholar query (`quick_search`), blending fresh paper results with the user's indexed documents.
+- **🔎 Live Literature Lookups in Chat**: `literature_search` turns trigger a real-time `quick_search` across Semantic Scholar and OpenAlex, blending fresh, deduplicated paper results with the user's indexed documents.
 - **💬 Anti-Hallucination Chat Advisor**: Interactive session chat `/api/chat` with strict guardrails preventing the model from generating claims unsupported by retrieved context, resilient `json_mode` structured output, and edge-case handling for empty context, overlong pastes, and table-of-contents formatting.
 - **📄 Chapter Export**: Export the synthesized chapter to styled `.docx` or `.pdf` via `/api/export/docx` and `/api/export/pdf`.
 - **🔥 Server-Sent Events (SSE)**: Streams agent execution progress, critic logs, and final generated chapters to the client in real-time.
