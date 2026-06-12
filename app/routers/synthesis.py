@@ -107,6 +107,62 @@ async def synthesize(body: SynthesizeRequest):
     )
 
 
+def _is_json_validate_error(exc: Exception) -> bool:
+    """True if Groq rejected the json_mode output as invalid JSON."""
+    body = getattr(exc, "body", None)
+    return isinstance(body, dict) and body.get("error", {}).get("code") == "json_validate_failed"
+
+
+def _repair_json_mode_response(failed_generation: str) -> dict | None:
+    """
+    Groq's json_mode occasionally emits the 'response' field as raw, unescaped
+    markdown (multi-line text with headers/lists) instead of a quoted JSON
+    string, which fails JSON validation. Re-wrap that raw block as a properly
+    escaped JSON string and re-parse the object.
+    """
+    resp_idx = failed_generation.find('"response"')
+    key_idx = failed_generation.find('"key_takeaways"')
+    if resp_idx == -1 or key_idx == -1 or key_idx <= resp_idx:
+        return None
+
+    colon_idx = failed_generation.find(":", resp_idx)
+    if colon_idx == -1:
+        return None
+
+    raw_value = failed_generation[colon_idx + 1:key_idx].strip()
+    if raw_value.endswith(","):
+        raw_value = raw_value[:-1].rstrip()
+    if not raw_value:
+        return None
+
+    repaired = "{" + '"response": ' + json.dumps(raw_value) + ", " + failed_generation[key_idx:]
+
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        return None
+
+
+async def _retry_chat_completion(messages: list, settings) -> ChatResponse:
+    """
+    One low-temperature retry with an explicit JSON-escaping reminder, used
+    when Groq's json_mode rejects the first attempt's output as invalid JSON.
+    """
+    retry_llm = ChatGroq(
+        model=settings.editor_model,
+        temperature=0.2,
+        api_key=settings.groq_api_key,
+    )
+    structured = retry_llm.with_structured_output(ChatResponse, method="json_mode")
+    reminder = SystemMessage(content=(
+        "REMINDER: Your previous reply was rejected for invalid JSON. Output ONLY a single "
+        "valid JSON object matching the schema. The 'response' field MUST be one JSON string "
+        "with every newline escaped as \\n and every double quote escaped as \\\" — never "
+        "place raw line breaks or unescaped quotes inside a string value."
+    ))
+    return await structured.ainvoke(messages + [reminder])
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat_advisor(body: ChatRequest) -> ChatResponse:
     """
@@ -281,8 +337,24 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
         )
         
         structured_llm = llm.with_structured_output(ChatResponse, method="json_mode")
-        response_data = await structured_llm.ainvoke(messages)
-        
+        try:
+            response_data = await structured_llm.ainvoke(messages)
+        except Exception as e:
+            if not _is_json_validate_error(e):
+                raise
+
+            repaired_dict = _repair_json_mode_response(e.body.get("error", {}).get("failed_generation", ""))
+            if repaired_dict is not None:
+                try:
+                    response_data = ChatResponse.model_validate(repaired_dict)
+                    logger.warning("Recovered chat response from malformed json_mode output via repair")
+                except Exception:
+                    repaired_dict = None
+
+            if repaired_dict is None:
+                logger.warning("json_mode validation failed, retrying with lower temperature: %s", e)
+                response_data = await _retry_chat_completion(messages, settings)
+
         # Override fields controlled by the backend
         response_data.sources = list(unique_sources)
         response_data.trigger_synthesis = False
