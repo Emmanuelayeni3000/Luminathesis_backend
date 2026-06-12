@@ -3,4 +3,4 @@
 set -o errexit
 
 # Install dependencies using Render's native uv
-uv pip install --system -r requirements.txt
+uv pip install -r requirements.txt

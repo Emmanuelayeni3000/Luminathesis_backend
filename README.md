@@ -13,7 +13,7 @@ LuminaThesis is a high-performance Python FastAPI backend that orchestrates lite
 
 ```mermaid
 graph TD
-  A[Next.js Frontend] -->|1. Uploads PDF/Docs| B(Vercel Blob Storage)
+  A[Next.js Frontend] -->|1. Uploads PDF/Docs| B(Supabase Storage)
   A -->|2. Topic + Doc URLs| C[FastAPI Server]
   C -->|3. Fetch Abstracts| D[Semantic Scholar API]
   C -->|4. Parse Documents| E[LlamaParse Cloud API]
@@ -22,7 +22,7 @@ graph TD
   G -->|7. Semantic Query| H[FlashRank Re-ranking]
   H -->|8. Reranked Context| I[LangGraph Synthesis Flow]
   I -->|Step A: Extractor| J[Llama 3.3 70B]
-  I -->|Step B: Architect| K[DeepSeek-R1 70B]
+  I -->|Step B: Architect| K[Qwen3 32B]
   I -->|Step C: Editor| L[Llama 3.3 70B]
   L -->|Step D: Critic Check| M{Quality Gate}
   M -->|Buzzwords Detected| L
@@ -30,13 +30,34 @@ graph TD
   N -->|9. SSE Real-time Stream| A
 ```
 
+### 💬 Chat Advisor Routing
+
+Every `/api/chat` turn is first triaged by a lightweight intent classifier (`app/services/intent.py`) before any LLM generation happens:
+
+```mermaid
+graph TD
+  A[User Message + History] --> B[classify_chat_intent]
+  B -->|thesis_synthesis| C[Trigger LangGraph Synthesis Pipeline]
+  B -->|literature_search| D[Vector Search + Live Semantic Scholar quick_search]
+  B -->|general_chat| E[Vector Search Only]
+  B -->|off_topic| F[Skip Retrieval]
+  D --> G[Editor LLM — json_mode structured output]
+  E --> G
+  F --> G
+  G -->|ChatResponse| A
+```
+
+- **Intent classification & query rewriting**: a single fast call resolves pronouns/follow-ups ("what about its limitations?") into standalone retrieval queries and routes the turn to one of `thesis_synthesis`, `literature_search`, `general_chat`, or `off_topic`. The synthesis pipeline only fires on an explicit, unambiguous request — outline/table-of-contents/brainstorming requests stay conversational.
+- **Live literature lookups**: `literature_search` turns are augmented with a real-time Semantic Scholar query (`quick_search`) alongside the user's indexed documents.
+- **Resilient structured output**: chat responses are generated with Groq `json_mode` (instead of strict tool-calling) plus Pydantic coercion validators, so malformed `key_takeaways`/`suggested_followups` fields no longer crash the endpoint.
+
 ---
 
 ## ✨ Features
 
 - **🌐 Multi-Agent Synthesis (LangGraph)**:
   - **Extractor Node (Llama 3.3)**: Generates detailed Literature Review and Problem Statement blocks with inline citations.
-  - **Architect Node (DeepSeek-R1)**: Leverages deep chain-of-thought thinking to draft structured Research Questions, SMART Objectives, and Methodology.
+  - **Architect Node (Qwen3 32B)**: Leverages deep chain-of-thought thinking to draft structured Research Questions, SMART Objectives, and Methodology.
   - **Editor Node (Llama 3.3)**: Harmonizes tone and filters out overused AI buzzwords.
   - **Critic Loop**: Intercepts prose and triggers self-correction loops if buzzwords or quality standards are violated.
 - **📚 Academic Harvester**: Queries Semantic Scholar to pull relevant paper abstracts based on the user's research topic.
@@ -44,7 +65,10 @@ graph TD
   - Embedding Model: `all-MiniLM-L6-v2` (384-dimensional).
   - Semantic Re-ranking: Uses `flashrank` (`ms-marco-TinyBERT-L-2-v2`) to prioritize the top relevant retrieved chunks.
   - Contextual Citations: Returns inline parenthetical citations dynamically mapped to original file sources and web URLs.
-- **💬 Anti-Hallucination Chat Advisor**: Interactive session chat `/api/chat` with strict guardrails preventing the model from generating claims unsupported by retrieved context.
+- **🧭 Smart Chat Intent Routing**: Every chat turn is classified (`thesis_synthesis` / `literature_search` / `general_chat` / `off_topic`) and the latest message is rewritten into a standalone, history-aware retrieval query before vector search runs.
+- **🔎 Live Literature Lookups in Chat**: `literature_search` turns trigger a real-time Semantic Scholar query (`quick_search`), blending fresh paper results with the user's indexed documents.
+- **💬 Anti-Hallucination Chat Advisor**: Interactive session chat `/api/chat` with strict guardrails preventing the model from generating claims unsupported by retrieved context, resilient `json_mode` structured output, and edge-case handling for empty context, overlong pastes, and table-of-contents formatting.
+- **📄 Chapter Export**: Export the synthesized chapter to styled `.docx` or `.pdf` via `/api/export/docx` and `/api/export/pdf`.
 - **🔥 Server-Sent Events (SSE)**: Streams agent execution progress, critic logs, and final generated chapters to the client in real-time.
 
 ---
@@ -55,7 +79,7 @@ graph TD
 - **Orchestration**: [LangGraph](https://langchain-ai.github.io/langgraph/) & [LangChain](https://python.langchain.com/)
 - **Database**: [Neon Serverless PostgreSQL](https://neon.tech/) with `pgvector`
 - **Vector Search**: Cosine Similarity + [FlashRank](https://github.com/PrithivirajDamodaran/FlashRank)
-- **Models**: Groq-hosted `llama-3.3-70b-versatile` & `deepseek-r1-distill-llama-70b`
+- **Models**: Groq-hosted `llama-3.3-70b-versatile` & `qwen/qwen3-32b`
 - **Package Manager**: [Astral uv](https://github.com/astral-sh/uv)
 
 ---
@@ -92,6 +116,10 @@ uv --version
    LLAMA_CLOUD_API_KEY=your-llamacloud-key
    SEMANTIC_SCHOLAR_API_KEY=your-optional-scholar-key
 
+   # Supabase Storage (used for file uploads via /api/upload)
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+
    # Database Connection
    DATABASE_URL=postgresql://user:pass@ep-host.us-east-1.aws.neon.tech/neondb?sslmode=require
 
@@ -117,13 +145,16 @@ The server will be live at `http://localhost:8000`. You can inspect the interact
 luminathesis-backend/
 ├── app/
 │   ├── routers/
-│   │   ├── session.py          # Session endpoints (initialize, list, detail)
-│   │   └── synthesis.py        # Core graph synthesis and chat advisor routes
+│   │   ├── session.py          # Upload + session initialization endpoints
+│   │   └── synthesis.py        # Synthesis pipeline, chat advisor, and export routes
 │   ├── services/
 │   │   ├── embeddings.py       # Embeddings generation, vector database & reranking
 │   │   ├── graph.py            # LangGraph multi-agent synthesis state chart
-│   │   ├── parser.py           # LlamaParse document parser
-│   │   └── scholar.py          # Semantic Scholar literature search
+│   │   ├── intent.py           # Chat intent classification & query rewriting
+│   │   ├── parser.py           # LlamaParse document parser + Supabase upload
+│   │   ├── scholar.py          # Semantic Scholar literature harvesting & live search
+│   │   └── document_generator.py # DOCX/PDF chapter export rendering
+│   ├── prompts/                # System prompts for the Extractor/Architect/Editor nodes
 │   ├── config.py               # Settings and env variables loader
 │   ├── database.py             # Neon connection pool and bootstrap
 │   └── models.py               # Pydantic schemas (requests, responses, health)
@@ -141,12 +172,12 @@ luminathesis-backend/
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | **GET** | `/health` | Server liveness check |
-| **POST** | `/api/initialize_session` | Bootstrap session and set up session-scoped vector partitions |
-| **POST** | `/api/synthesize` | Trigger literature search, document ingestion, and LangGraph flow |
-| **POST** | `/api/chat` | RAG-based interactive chat with user-personalized greeting and anti-hallucination |
-| **GET** | `/api/sessions` | Retrieve all cached historical sessions |
-| **GET** | `/api/sessions/{session_id}` | Retrieve specific session data (drafts, advisor logs, metadata) |
-| **DELETE**| `/api/sessions/{session_id}` | Terminate and purge session metadata from database |
+| **POST** | `/api/upload` | Upload a file to Supabase Storage and return its public URL |
+| **POST** | `/api/initialize_session` | Parse uploaded docs, harvest abstracts, and store embeddings for a session |
+| **POST** | `/api/synthesize` | Run the LangGraph synthesis flow (SSE stream or JSON) for a topic |
+| **POST** | `/api/chat` | Intent-routed RAG chat advisor with anti-hallucination guardrails |
+| **POST** | `/api/export/docx` | Export the synthesized thesis chapter as a styled `.docx` |
+| **POST** | `/api/export/pdf` | Export the synthesized thesis chapter as a styled `.pdf` |
 
 ---
 
