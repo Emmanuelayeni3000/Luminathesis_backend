@@ -2,5 +2,6 @@
 # exit on error
 set -o errexit
 
-# Install dependencies using Render's native uv
-uv pip install -r requirements.txt
+# Install dependencies into Render's managed venv (the same
+# interpreter the start command runs with)
+python -m pip install -r requirements.txt
