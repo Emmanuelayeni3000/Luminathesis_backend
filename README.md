@@ -1,3 +1,13 @@
+---
+title: LuminaThesis Backend
+emoji: 🌌
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 🌌 LuminaThesis Backend
 
 > **Autonomous PhD Literature Synthesis Flow & RAG Chat Advisor**
