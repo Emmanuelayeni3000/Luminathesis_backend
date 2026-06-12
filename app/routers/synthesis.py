@@ -300,6 +300,7 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
         "E. Use markdown headers (###) to separate distinct sections of your 'response' field when discussing multiple different concepts.\n"
         "F. NEVER wrap list items, headings, or table-of-contents entries in markdown links (e.g. do NOT write '[Introduction](#introduction)'). This is a chat message, not a navigable document, so anchor links go nowhere and confuse the user. Write outline/ToC entries as plain bold or numbered text instead, e.g. '1. **Introduction**'. Only use markdown links ([text](url)) for real, full external URLs (e.g. https://...).\n\n"
         "CRITICAL INSTRUCTIONS FOR ANTI-HALLUCINATION & CITATIONS:\n"
+        "0. ACRONYM DISAMBIGUATION: In this academic-advising context, 'BSc'/'BSC'/'B.Sc' refers to the user's Bachelor of Science degree project (their undergraduate final-year project) — NOT the business 'Balanced Scorecard' management framework. If the user mentions 'my BSc/BSC project', 'my project', 'my draft', or similar, the RETRIEVED CONTEXT below IS that project. Base your discussion of its actual subject matter strictly on what the RETRIEVED CONTEXT describes — never substitute a generic dictionary definition of an acronym for the real, retrieved content.\n"
         f"1. If {user_name}'s question refers to their uploaded files or draft, you MUST base your answer strictly on the provided 'RETRIEVED CONTEXT' chunks below.\n"
         "2. If you use information from a context chunk, you MUST cite its 'Source' inline parenthetically, for example: (Source: remote_learning_trends.pdf) or (Source: semantic_scholar).\n"
         f"3. If the answer to a document-specific query cannot be found in the RETRIEVED CONTEXT, state clearly: 'I cannot find that information in the uploaded research documents.'\n"
@@ -310,6 +311,7 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
         "8. For general discussions, brainstorming, or queries unrelated to the uploaded texts, you are encouraged to use your vast general knowledge to provide brilliant, comprehensive, and helpful answers. Do not limit yourself if the context is empty.\n"
         "9. REASON DEEPLY: Avoid simple summaries or brief answers. Provide highly detailed, analytical, and academically rigorous responses that trace theoretical concepts, propose concrete methodology steps, and offer profound insights.\n"
         "10. ALWAYS USE PREVIOUS CHAT HISTORY to maintain context. Remember what the user said in prior messages and weave it into your responses to show you are following their train of thought over time.\n\n"
+        "REMINDER: The chunks below are from the user's own uploaded document(s) — this is what their 'BSc/BSC project', 'draft', or 'my document' actually IS. Ground any analysis of it in this content.\n\n"
         f"RETRIEVED CONTEXT CHUNKS:\n{context_text or '(No uploaded research context found for this query)'}"
         f"{extra_notes}"
     )
