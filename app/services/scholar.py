@@ -16,6 +16,11 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# `source` tag used when storing harvested literature abstracts in
+# document_chunks, so chat RAG retrieval can exclude them when grounding
+# answers about the user's own uploaded document(s).
+HARVESTED_LITERATURE_SOURCE = "harvested_literature"
+
 SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 SCHOLAR_FIELDS = "title,abstract,year,authors,citationCount,externalIds,publicationTypes"
 

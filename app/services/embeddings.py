@@ -208,12 +208,16 @@ async def similarity_search(
 
 
 async def similarity_search_with_sources(
-    session_id: str, query: str, k: int | None = None
+    session_id: str, query: str, k: int | None = None, exclude_sources: list[str] | None = None
 ) -> list[dict]:
     """
     Retrieve top-k chunks and their metadata sources for a given session.
     Uses pgvector cosine distance operator `<=>` and FlashRank re-ranking.
     Returns list of {"content": content_text, "source": source_metadata}.
+
+    `exclude_sources` filters out chunks whose `source` column exactly
+    matches one of the given values (e.g. harvested literature abstracts,
+    which would otherwise compete with the user's own uploaded documents).
     """
     settings = get_settings()
     top_k = k or settings.vector_top_k
@@ -230,20 +234,29 @@ async def similarity_search_with_sources(
         [query], normalize_embeddings=True
     )[0]
 
+    where_clause = "session_id = %s"
+    params: list = [session_id]
+    if exclude_sources:
+        placeholders = ", ".join(["%s"] * len(exclude_sources))
+        where_clause += f" AND source NOT IN ({placeholders})"
+        params.extend(exclude_sources)
+    params.append(query_embedding.tolist())
+    params.append(candidate_limit)
+
     max_retries = 3
     results = []
     for attempt in range(max_retries):
         try:
             async with pool.connection() as conn:
                 rows = await conn.execute(
-                    """
+                    f"""
                     SELECT content, source
                     FROM document_chunks
-                    WHERE session_id = %s
+                    WHERE {where_clause}
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
                     """,
-                    (session_id, query_embedding.tolist(), candidate_limit),
+                    params,
                 )
                 results = await rows.fetchall()
             break
