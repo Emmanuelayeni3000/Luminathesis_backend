@@ -31,9 +31,9 @@ graph TD
   C -->|6. Store Vectors| G[(Neon PostgreSQL + pgvector)]
   G -->|7. Semantic Query| H[FlashRank Re-ranking]
   H -->|8. Reranked Context| I[LangGraph Synthesis Flow]
-  I -->|Step A: Extractor| J[Llama 3.3 70B]
-  I -->|Step B: Architect| K[Qwen3 32B]
-  I -->|Step C: Editor| L[Llama 3.3 70B]
+  I -->|Step A: Extractor| J[Qwen3.6 27B]
+  I -->|Step B: Architect| K[GPT OSS 120B]
+  I -->|Step C: Editor| L[Qwen3.6 27B]
   L -->|Step D: Critic Check| M{Quality Gate}
   M -->|Buzzwords Detected| L
   M -->|Pass| N[MemorySaver State Checkpoint]
@@ -66,9 +66,9 @@ graph TD
 ## ✨ Features
 
 - **🌐 Multi-Agent Synthesis (LangGraph)**:
-  - **Extractor Node (Llama 3.3)**: Generates detailed Literature Review and Problem Statement blocks with inline citations.
-  - **Architect Node (Qwen3 32B)**: Leverages deep chain-of-thought thinking to draft structured Research Questions, SMART Objectives, and Methodology.
-  - **Editor Node (Llama 3.3)**: Harmonizes tone and filters out overused AI buzzwords.
+  - **Extractor Node (Qwen3.6)**: Generates detailed Literature Review and Problem Statement blocks with inline citations.
+  - **Architect Node (GPT OSS 120B)**: Leverages deep chain-of-thought thinking to draft structured Research Questions, SMART Objectives, and Methodology.
+  - **Editor Node (Qwen3.6)**: Harmonizes tone and filters out overused AI buzzwords.
   - **Critic Loop**: Intercepts prose and triggers self-correction loops if buzzwords or quality standards are violated.
 - **📚 Academic Harvester**: Queries Semantic Scholar and OpenAlex in parallel, deduplicated by DOI/title, to pull relevant paper abstracts from multiple sources based on the user's research topic.
 - **⚡ Advanced RAG Pipeline**:
@@ -89,7 +89,7 @@ graph TD
 - **Orchestration**: [LangGraph](https://langchain-ai.github.io/langgraph/) & [LangChain](https://python.langchain.com/)
 - **Database**: [Neon Serverless PostgreSQL](https://neon.tech/) with `pgvector`
 - **Vector Search**: Cosine Similarity + [FlashRank](https://github.com/PrithivirajDamodaran/FlashRank)
-- **Models**: Groq-hosted `llama-3.3-70b-versatile` & `qwen/qwen3-32b`
+- **Models**: Groq-hosted `qwen-3.6-27b` & `gpt-oss-120b`
 - **Package Manager**: [Astral uv](https://github.com/astral-sh/uv)
 
 ---

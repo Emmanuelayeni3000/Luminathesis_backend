@@ -23,9 +23,9 @@ class Settings(BaseSettings):
     frontend_url: str = "https://luminathesis-ai.vercel.app"
 
     # Model identifiers
-    extractor_model: str = "llama-3.3-70b-versatile"
-    architect_model: str = "qwen/qwen3-32b"
-    editor_model: str = "llama-3.3-70b-versatile"
+    extractor_model: str = "qwen-3.6-27b"
+    architect_model: str = "gpt-oss-120b"
+    editor_model: str = "qwen-3.6-27b"
 
     # Embedding
     embedding_model: str = "all-MiniLM-L6-v2"
