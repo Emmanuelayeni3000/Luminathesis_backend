@@ -18,6 +18,7 @@ from app.services.parser import parse_documents, upload_file_to_supabase
 from app.services.scholar import harvest_abstracts, format_abstracts_as_context, HARVESTED_LITERATURE_SOURCE
 from app.services.embeddings import chunk_text, store_chunks
 from app.services.ratelimit import check_rate_limit
+from app.services.scope import OUT_OF_SCOPE_TOPIC_MESSAGE, is_academic_topic
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -97,6 +98,10 @@ async def initialize_session(body: InitSessionRequest) -> InitSessionResponse:
             status_code=429,
             detail=f"Please wait {wait}s before re-initializing this session.",
         )
+
+    # Academic-scope gate: don't harvest literature or index anything for non-academic topics.
+    if not await is_academic_topic(body.topic):
+        raise HTTPException(status_code=422, detail=OUT_OF_SCOPE_TOPIC_MESSAGE)
 
     all_chunks: list[dict] = []
     files_parsed = 0

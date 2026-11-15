@@ -20,6 +20,7 @@ import uuid
 import httpx
 
 from app.services.citations import find_unsupported_citations
+from app.services.scope import OUT_OF_SCOPE_MESSAGE
 
 CASES = pathlib.Path(__file__).with_name("chat_cases.json")
 
@@ -61,6 +62,8 @@ def run(url: str, session: str | None) -> int:
                 problems.append(f"ungrounded citations: {bad}")
             if c.get("off_topic") and d.get("sources"):
                 problems.append("off-topic reply cited sources")
+            if c.get("off_topic") and d.get("response", "").strip() != OUT_OF_SCOPE_MESSAGE.strip():
+                problems.append("off-topic prompt was not declined")
             if c.get("needs_session_docs") and not d.get("sources"):
                 problems.append("expected sources from session docs, got none")
             for s in c.get("must_not_contain", []):
