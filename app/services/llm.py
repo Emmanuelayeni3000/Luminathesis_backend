@@ -63,6 +63,7 @@ async def verify_models() -> None:
         ("extractor", settings.extractor_model),
         ("architect", settings.architect_model),
         ("editor", settings.editor_model),
+        ("chat", settings.chat_model),
     ):
         if model in _available:
             logger.info("Model check ✓ %s → %s", role, model)

@@ -8,8 +8,10 @@ Supports both:
   - stream=true  → Server-Sent Events (text/event-stream)
   - stream=false → JSON response with full SynthesisResult
 """
+import asyncio
 import json
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
@@ -32,6 +34,9 @@ router = APIRouter()
 # Hard cap on the user's chat message length. Generous enough for a pasted
 # thesis section, but prevents runaway prompts from extreme pastes.
 MAX_CHAT_MESSAGE_CHARS = 12000
+
+# Upper bound on the live Semantic Scholar/OpenAlex lookup during chat.
+LIVE_SEARCH_TIMEOUT_SECONDS = 8.0
 
 # Cooldown between /synthesize runs for the same session — this pipeline
 # makes several Groq calls plus a literature harvest, so accidental repeat
@@ -162,7 +167,7 @@ async def _retry_chat_completion(messages: list, settings) -> ChatResponse:
     One low-temperature retry with an explicit JSON-escaping reminder, used
     when Groq's json_mode rejects the first attempt's output as invalid JSON.
     """
-    structured = make_structured_llm(settings.editor_model, ChatResponse, temperature=0.2)
+    structured = make_structured_llm(settings.chat_model, ChatResponse, temperature=0.2)
     reminder = SystemMessage(content=(
         "REMINDER: Your previous reply was rejected for invalid JSON. Output ONLY a single "
         "valid JSON object matching the schema. The 'response' field MUST be one JSON string "
@@ -215,39 +220,51 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
             synthesis_topic=topic
         )
 
-    # 1. Retrieve context chunks with their metadata sources (skip for off-topic chit-chat)
+    # 1. Retrieve context chunks with their metadata sources (skip for off-topic chit-chat).
+    #    For literature_search, the vector lookup and the live scholar lookup run concurrently.
     context_items: list[dict] = []
     if intent != "off_topic":
-        try:
-            context_items = await similarity_search_with_sources(
-                session_id=body.session_id,
-                query=search_query,
-                k=6,
-                # Harvested literature abstracts are stored alongside the user's
-                # own document chunks but shouldn't compete with them when the
-                # user is asking about "my project"/"my draft" — only pull them
-                # in for explicit literature_search turns.
-                exclude_sources=None if intent == "literature_search" else [HARVESTED_LITERATURE_SOURCE],
-            )
-            logger.info("Retrieved %d context chunks for chat advisor", len(context_items))
-        except Exception as e:
-            logger.error("Chat context retrieval failed: %s", e)
-            context_items = []
-
-        # 1b. Literature search intent: augment with a live Semantic Scholar lookup
-        if intent == "literature_search":
+        async def _retrieve() -> list[dict]:
             try:
-                live_papers = await quick_search(search_query, limit=5)
-                for p in live_papers:
-                    first_author = (p["authors"][0].split() if p.get("authors") else [])
-                    author_str = f"{first_author[-1]} et al." if first_author else "Unknown authors"
-                    context_items.append({
-                        "content": f"{p['title']} ({p.get('year', 'n.d.')}) — {author_str}\nAbstract: {p['abstract']}",
-                        "source": f"{p.get('source', 'Semantic Scholar')} (live search)",
-                    })
-                logger.info("Live literature search returned %d papers", len(live_papers))
+                return await similarity_search_with_sources(
+                    session_id=body.session_id,
+                    query=search_query,
+                    k=6,
+                    # Harvested literature abstracts are stored alongside the user's
+                    # own document chunks but shouldn't compete with them when the
+                    # user is asking about "my project"/"my draft" — only pull them
+                    # in for explicit literature_search turns.
+                    exclude_sources=None if intent == "literature_search" else [HARVESTED_LITERATURE_SOURCE],
+                )
+            except Exception as e:
+                logger.error("Chat context retrieval failed: %s", e)
+                return []
+
+        async def _live_search() -> list[dict]:
+            if intent != "literature_search":
+                return []
+            try:
+                # Hard cap so a slow scholar API can't stall the whole reply.
+                return await asyncio.wait_for(quick_search(search_query, limit=5), timeout=LIVE_SEARCH_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("Live literature search timed out after %ss", LIVE_SEARCH_TIMEOUT_SECONDS)
             except Exception as e:
                 logger.warning("Live literature search failed: %s", e)
+            return []
+
+        t_retr = time.perf_counter()
+        context_items, live_papers = await asyncio.gather(_retrieve(), _live_search())
+        logger.info(
+            "Retrieved %d context chunks + %d live papers in %.1fs",
+            len(context_items), len(live_papers), time.perf_counter() - t_retr,
+        )
+        for p in live_papers:
+            first_author = (p["authors"][0].split() if p.get("authors") else [])
+            author_str = f"{first_author[-1]} et al." if first_author else "Unknown authors"
+            context_items.append({
+                "content": f"{p['title']} ({p.get('year', 'n.d.')}) — {author_str}\nAbstract: {p['abstract']}",
+                "source": f"{p.get('source', 'Semantic Scholar')} (live search)",
+            })
 
     # 2. Setup prompt and guidelines for RAG + Anti-hallucination + References
     context_text_blocks = []
@@ -351,7 +368,7 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
         settings = get_settings()
         # Higher temperature for more creative/deep reasoning; falls back to a
         # second model on 404/429/5xx (see app.services.llm).
-        structured_llm = make_structured_llm(settings.editor_model, ChatResponse, temperature=0.6)
+        structured_llm = make_structured_llm(settings.chat_model, ChatResponse, temperature=0.6)
         try:
             response_data = await structured_llm.ainvoke(messages)
         except Exception as e:

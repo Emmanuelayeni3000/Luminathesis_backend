@@ -3,6 +3,7 @@ Embedding service using all-MiniLM-L6-v2 (≈90 MB, 384-dim).
 Model is loaded once at startup and cached — never reloaded between requests.
 Vectors are stored in Neon via psycopg3 COPY for throughput.
 """
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -96,7 +97,8 @@ async def store_chunks(session_id: str, chunks: list[dict]) -> int:
     texts = [c["content"] for c in chunks]
 
     logger.info("Embedding %d chunks…", len(texts))
-    embeddings: np.ndarray = model.encode(
+    embeddings: np.ndarray = await asyncio.to_thread(
+        model.encode,
         texts,
         batch_size=32,
         show_progress_bar=False,
@@ -157,8 +159,9 @@ async def similarity_search(
         return []
 
     model = get_embedding_model()
-    query_embedding: np.ndarray = model.encode(
-        [query], normalize_embeddings=True
+    # CPU-bound: run off the event loop so other requests aren't blocked.
+    query_embedding: np.ndarray = (
+        await asyncio.to_thread(model.encode, [query], normalize_embeddings=True)
     )[0]
 
     max_retries = 3
@@ -197,7 +200,7 @@ async def similarity_search(
         
         passages = [{"id": idx, "text": text} for idx, text in enumerate(raw_texts)]
         req = RerankRequest(query=query, passages=passages)
-        reranked = ranker.rerank(req)
+        reranked = await asyncio.to_thread(ranker.rerank, req)
         
         reranked_texts = [r["text"] for r in reranked[:top_k]]
         logger.info("FlashRank re-ranked %d candidates down to %d", len(raw_texts), len(reranked_texts))
@@ -230,8 +233,9 @@ async def similarity_search_with_sources(
         return []
 
     model = get_embedding_model()
-    query_embedding: np.ndarray = model.encode(
-        [query], normalize_embeddings=True
+    # CPU-bound: run off the event loop so other requests aren't blocked.
+    query_embedding: np.ndarray = (
+        await asyncio.to_thread(model.encode, [query], normalize_embeddings=True)
     )[0]
 
     where_clause = "session_id = %s"
@@ -279,7 +283,7 @@ async def similarity_search_with_sources(
         
         passages = [{"id": idx, "text": cand["content"]} for idx, cand in enumerate(raw_candidates)]
         req = RerankRequest(query=query, passages=passages)
-        reranked = ranker.rerank(req)
+        reranked = await asyncio.to_thread(ranker.rerank, req)
         
         reranked_results = []
         for r in reranked[:top_k]:

@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     extractor_model: str = "qwen/qwen3.8-27b"
     architect_model: str = "openai/gpt-oss-120b"
     editor_model: str = "qwen/qwen3.8-27b"
+    # Chat advisor answers (JSON-mode). Needs reliable JSON-mode output and low latency:
+    # Qwen often ignores json_mode (forcing a full re-generation), gpt-oss does not.
+    chat_model: str = "openai/gpt-oss-120b"
 
     # Embedding
     embedding_model: str = "all-MiniLM-L6-v2"
