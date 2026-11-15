@@ -2,9 +2,11 @@
 LangGraph 3-node thesis synthesis pipeline.
 
 Nodes:
-  1. Extractor  → Llama 3.3  → Background + Problem Statement (with citations)
-  2. Architect  → DeepSeek-R1 → Research Questions, Objectives, Hypotheses, Scope
-  3. Editor     → Llama 3.3  → Unified, polished academic prose (buzzword-free)
+  1. Extractor  → settings.extractor_model → Background + Problem Statement (with citations)
+  2. Architect  → settings.architect_model → Research Questions, Objectives, Hypotheses, Scope
+  3. Editor     → settings.editor_model    → Unified, polished academic prose (buzzword-free)
+  4. Critic     → buzzword + citation-grounding check; loops back to the Editor
+  5. Finalize   → strips any citation still not backed by the retrieved context
 
 State flows left to right; each node reads from and writes to ThesisState.
 """
@@ -13,13 +15,14 @@ import logging
 import re
 from typing import AsyncIterator
 
-from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 
 from app.config import get_settings
 from app.prompts.extractor import EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_USER_TEMPLATE
 from app.prompts.architect import ARCHITECT_SYSTEM_PROMPT, ARCHITECT_USER_TEMPLATE
+from app.services.llm import make_llm
+from app.services.citations import find_unsupported_citations, strip_unsupported_citations
 from app.prompts.editor import EDITOR_SYSTEM_PROMPT, EDITOR_USER_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -27,20 +30,15 @@ logger = logging.getLogger(__name__)
 
 # ─── LLM factory ─────────────────────────────────────────────────────────────
 
-def _make_llm(model: str, temperature: float) -> ChatGroq:
-    settings = get_settings()
-    return ChatGroq(
-        model=model,
-        temperature=temperature,
-        api_key=settings.groq_api_key,
-        max_retries=3,
-    )
+def _make_llm(model: str, temperature: float):
+    # Model resolution + fallback on 404/429/5xx lives in app.services.llm
+    return make_llm(model, temperature, max_retries=3)
 
 
 def _parse_json_from_response(text: str) -> dict:
     """
     Extract the first JSON object from an LLM response.
-    Handles DeepSeek-R1's <thinking>...</thinking> preamble.
+    Handles a <thinking>...</thinking> reasoning preamble.
     """
     # Strip <thinking> block if present
     text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL).strip()
@@ -62,7 +60,7 @@ def _parse_json_from_response(text: str) -> dict:
 
 async def extractor_node(state: dict) -> dict:
     """
-    Llama 3.3 — Extracts Background and Problem Statement from context chunks.
+    Extracts Background and Problem Statement from context chunks.
     """
     settings = get_settings()
     llm = _make_llm(settings.extractor_model, temperature=0.3)
@@ -73,7 +71,7 @@ async def extractor_node(state: dict) -> dict:
         context=context or "(No additional documents provided — use general knowledge.)",
     )
 
-    logger.info("[Extractor] Running Llama 3.3 extraction…")
+    logger.info("[Extractor] Running extraction…")
     response = await llm.ainvoke(
         [
             SystemMessage(content=EXTRACTOR_SYSTEM_PROMPT),
@@ -95,7 +93,7 @@ async def extractor_node(state: dict) -> dict:
 
 async def architect_node(state: dict) -> dict:
     """
-    DeepSeek-R1 — Formulates Research Questions, Objectives, Hypotheses, Scope.
+    Formulates Research Questions, Objectives, Hypotheses, Scope.
     Uses chain-of-thought reasoning (thinking block stripped from output).
     """
     settings = get_settings()
@@ -107,7 +105,7 @@ async def architect_node(state: dict) -> dict:
         problem_statement=state.get("problem_statement", ""),
     )
 
-    logger.info("[Architect] Running DeepSeek-R1 architecture…")
+    logger.info("[Architect] Running architecture…")
     response = await llm.ainvoke(
         [
             SystemMessage(content=ARCHITECT_SYSTEM_PROMPT),
@@ -131,7 +129,7 @@ async def architect_node(state: dict) -> dict:
 
 async def editor_node(state: dict) -> dict:
     """
-    Llama 3.3 — Rewrites all sections into unified, polished academic prose.
+    Rewrites all sections into unified, polished academic prose.
     Enforces buzzword blocklist and academic register.
     """
     settings = get_settings()
@@ -161,7 +159,7 @@ async def editor_node(state: dict) -> dict:
             )
         )
 
-    logger.info("[Editor] Running Llama 3.3 editing pass…")
+    logger.info("[Editor] Running editing pass…")
     response = await llm.ainvoke(messages)
 
     final = response.content.strip()
@@ -179,33 +177,61 @@ async def editor_node(state: dict) -> dict:
 
 # ─── Critic Router ───────────────────────────────────────────────────────────
 
+BUZZWORDS = ["delve", "tapestry", "underscores", "crucial", "testament", "pinnacle", "beacon", "groundbreaking"]
+_BUZZWORD_RE = re.compile(r"\b(" + "|".join(BUZZWORDS) + r")\b", re.IGNORECASE)
+
+MAX_CRITIC_LOOPS = 2
+
+
+def _reference_text(state: dict) -> str:
+    return "\n".join(state.get("context_chunks", []))
+
+
 def check_quality(state: dict) -> str:
     """
-    Quality check conditional router.
-    Evaluates final output for buzzwords and loops back to editor if needed.
+    Critic router. Fails the draft (and loops back to the editor, up to
+    MAX_CRITIC_LOOPS times) if it contains blocklisted words or citations
+    that are not backed by the retrieved context.
     """
     final_text = state.get("final_output", "")
     if not final_text:
-        return END
+        return "finalize"
 
-    # Blocklist terms
-    buzzwords = ["delve", "tapestry", "underscores", "crucial", "testament", "pinnacle", "beacon", "groundbreaking"]
-    found = [w for w in buzzwords if w in final_text.lower()]
+    found = sorted({m.group(1).lower() for m in _BUZZWORD_RE.finditer(final_text)})
+    bad_citations = find_unsupported_citations(final_text, _reference_text(state))
 
     loop_count = state.get("loop_count", 0)
+    problems = []
+    if found:
+        problems.append(f"Blocklisted words found: {found}. Remove these terms.")
+    if bad_citations:
+        problems.append(
+            f"These citations do not appear in the provided literature: {bad_citations[:8]}. "
+            "Remove them or replace them with citations that appear in the provided context. "
+            "Never invent citations."
+        )
 
-    if found and loop_count < 2:
-        state["feedback"] = f"Blocklisted words found: {found}. Please rewrite the draft to remove these terms."
+    if problems and loop_count < MAX_CRITIC_LOOPS:
+        state["feedback"] = " ".join(problems)
         state["loop_count"] = loop_count + 1
-        logger.warning("[Critic] Quality check failed (Loop %d/2). Feedback: %s", state["loop_count"], state["feedback"])
+        logger.warning("[Critic] Quality check failed (Loop %d/%d). Feedback: %s",
+                       state["loop_count"], MAX_CRITIC_LOOPS, state["feedback"])
         return "editor"
 
-    if found:
+    if problems:
         logger.warning("[Critic] Quality check failed but maximum loops reached. Proceeding.")
     else:
         logger.info("[Critic] Quality check passed ✓")
+    return "finalize"
 
-    return END
+
+async def finalize_node(state: dict) -> dict:
+    """Last line of defence: drop any citation that is still not grounded."""
+    text = state.get("final_output", "")
+    cleaned, removed = strip_unsupported_citations(text, _reference_text(state))
+    if removed:
+        logger.warning("[Finalize] Removed %d ungrounded citation(s): %s", len(removed), removed[:8])
+    return {**state, "final_output": cleaned, "removed_citations": removed}
 
 
 # ─── Graph Construction ───────────────────────────────────────────────────────
@@ -215,6 +241,7 @@ def build_graph() -> StateGraph:
     graph.add_node("extractor", extractor_node)
     graph.add_node("architect", architect_node)
     graph.add_node("editor", editor_node)
+    graph.add_node("finalize", finalize_node)
 
     graph.set_entry_point("extractor")
     graph.add_edge("extractor", "architect")
@@ -226,9 +253,10 @@ def build_graph() -> StateGraph:
         check_quality,
         {
             "editor": "editor",
-            END: END,
+            "finalize": "finalize",
         }
     )
+    graph.add_edge("finalize", END)
 
     from langgraph.checkpoint.memory import MemorySaver
     memory = MemorySaver()

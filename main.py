@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.database import init_db, close_db
 from app.services.embeddings import load_embedding_model, load_reranker
+from app.services.llm import verify_models
 from app.routers import session, synthesis
 from app.models import HealthResponse
 
@@ -57,6 +58,9 @@ async def lifespan(app: FastAPI):
         load_reranker()
     except Exception as e:
         logger.warning("Could not load models: %s", e)
+
+    # Fail loudly (in the logs) if a configured Groq model ID doesn't exist
+    await verify_models()
 
     # Initialise Neon connection pool and bootstrap schema
     try:

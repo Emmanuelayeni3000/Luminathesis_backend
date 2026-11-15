@@ -11,11 +11,12 @@ A single fast LLM call per chat turn does two jobs:
 """
 import json
 import logging
+import re
 
-from langchain_groq import ChatGroq
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.config import get_settings
+from app.services.llm import make_llm
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ async def classify_chat_intent(message: str, history: list[dict]) -> dict:
     Falls back to general_chat with the raw message as the search query on any failure.
     """
     settings = get_settings()
-    llm = ChatGroq(model=settings.editor_model, temperature=0.0, api_key=settings.groq_api_key)
+    llm = make_llm(settings.editor_model, temperature=0.0)
 
     history_context = "\n".join(
         f"{h.get('role', '').upper()}: {h.get('content', '')}" for h in history[-4:]
@@ -90,15 +91,16 @@ async def classify_chat_intent(message: str, history: list[dict]) -> dict:
     fallback = {"intent": "general_chat", "synthesis_topic": "", "search_query": message}
 
     try:
-        response = await llm.ainvoke([SystemMessage(content=system_prompt)])
-        content = response.content.strip()
-        if content.startswith("```"):
-            content = content.strip("`")
-            if content.startswith("json"):
-                content = content[4:]
-        content = content.strip()
-
-        data = json.loads(content)
+        # Some models (e.g. Qwen on Groq) reject requests with no user turn.
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content="Classify the latest user message. Respond with the JSON object only."),
+        ])
+        content = response.content
+        # Reasoning models may prepend <think>…</think>; drop it, then take the JSON object.
+        content = re.sub(r"<think(?:ing)?>.*?</think(?:ing)?>", "", content, flags=re.DOTALL)
+        obj = re.search(r"\{.*\}", content, re.DOTALL)
+        data = json.loads(obj.group() if obj else content.strip())
 
         intent = data.get("intent")
         if intent not in VALID_INTENTS:

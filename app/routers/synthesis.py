@@ -22,7 +22,8 @@ from app.services.intent import classify_chat_intent
 from app.services.scholar import quick_search, HARVESTED_LITERATURE_SOURCE
 from app.services.ratelimit import check_rate_limit
 from app.config import get_settings
-from langchain_groq import ChatGroq
+from app.services.llm import make_structured_llm
+from app.services.citations import strip_unsupported_citations
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ async def synthesize(body: SynthesizeRequest):
     Run the LangGraph synthesis pipeline for a session.
 
     Retrieves top-k context chunks from Neon, then runs:
-      Extractor (Llama 3.3) → Architect (DeepSeek-R1) → Editor (Llama 3.3)
+      Extractor → Architect → Editor → Critic
 
     Returns SSE stream if `stream=true`, else JSON.
     """
@@ -161,12 +162,7 @@ async def _retry_chat_completion(messages: list, settings) -> ChatResponse:
     One low-temperature retry with an explicit JSON-escaping reminder, used
     when Groq's json_mode rejects the first attempt's output as invalid JSON.
     """
-    retry_llm = ChatGroq(
-        model=settings.editor_model,
-        temperature=0.2,
-        api_key=settings.groq_api_key,
-    )
-    structured = retry_llm.with_structured_output(ChatResponse, method="json_mode")
+    structured = make_structured_llm(settings.editor_model, ChatResponse, temperature=0.2)
     reminder = SystemMessage(content=(
         "REMINDER: Your previous reply was rejected for invalid JSON. Output ONLY a single "
         "valid JSON object matching the schema. The 'response' field MUST be one JSON string "
@@ -350,16 +346,12 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
     # Add current user message
     messages.append(HumanMessage(content=user_message))
 
-    # 4. Invoke LLM (Llama 3.3)
+    # 4. Invoke LLM
     try:
         settings = get_settings()
-        llm = ChatGroq(
-            model=settings.editor_model,
-            temperature=0.6,  # Higher temperature for more creative/deep reasoning
-            api_key=settings.groq_api_key,
-        )
-        
-        structured_llm = llm.with_structured_output(ChatResponse, method="json_mode")
+        # Higher temperature for more creative/deep reasoning; falls back to a
+        # second model on 404/429/5xx (see app.services.llm).
+        structured_llm = make_structured_llm(settings.editor_model, ChatResponse, temperature=0.6)
         try:
             response_data = await structured_llm.ainvoke(messages)
         except Exception as e:
@@ -378,6 +370,13 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
                 logger.warning("json_mode validation failed, retrying with lower temperature: %s", e)
                 response_data = await _retry_chat_completion(messages, settings)
 
+        # Drop any "(Source: x)" citation that names a source we did not retrieve.
+        response_data.response, removed = strip_unsupported_citations(
+            response_data.response, known_sources=unique_sources
+        )
+        if removed:
+            logger.warning("Removed %d ungrounded source citation(s) from chat reply: %s", len(removed), removed)
+
         # Override fields controlled by the backend
         response_data.sources = list(unique_sources)
         response_data.trigger_synthesis = False
@@ -386,7 +385,11 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
         return response_data
     except Exception as e:
         logger.error("Chat advisor LLM invocation failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Advisor service error: {e}")
+        # Full provider error stays in the logs; don't leak it to clients.
+        status = getattr(e, "status_code", None)
+        if status == 429:
+            raise HTTPException(status_code=429, detail="The advisor is busy right now. Please try again in a moment.")
+        raise HTTPException(status_code=503, detail="The advisor is temporarily unavailable. Please try again.")
 
 
 @router.post("/export/docx")
