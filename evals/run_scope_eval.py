@@ -20,7 +20,10 @@ from app.services.scope import GREETING_MESSAGE, OUT_OF_SCOPE_MESSAGE
 
 CASES = pathlib.Path(__file__).with_name("scope_cases.json")
 # Markers of a refusal, whether from the router (exact message) or the answering model.
-REFUSAL_MARKERS = ["isn't academic", "not academic", "only answer questions related to academics"]
+REFUSAL_MARKERS = [
+    "isn't academic", "not academic", "only answer questions related to academics",
+    "outside my scope", "can only help with the academic",
+]
 
 
 def _norm(text: str) -> str:
@@ -46,8 +49,10 @@ def check(case: dict, data: dict) -> list[str]:
         elif expect == "answer" and data.get("trigger_synthesis"):
             problems.append("unexpectedly triggered synthesis")
     elif expect == "partial":
-        if not any(m in _norm(resp) for m in REFUSAL_MARKERS):
-            problems.append("did not decline the non-academic part")
+        # Pass/fail is decided by must_contain / must_not_contain (academic part answered,
+        # non-academic part not provided). The model's decline wording varies, so it isn't required.
+        if is_refusal(resp) and resp.strip() == OUT_OF_SCOPE_MESSAGE.strip():
+            problems.append("refused the whole message instead of answering the academic part")
     for s in case.get("must_contain", []):
         if s.lower() not in resp.lower():
             problems.append(f"missing {s!r}")

@@ -21,5 +21,5 @@
   {"message": "How do I cite a journal article in APA 7th edition?", "expect": "answer"},
   {"message": "Explain how photosynthesis works", "expect": "answer"},
   {"message": "Write a thesis topic on the economics of the fast-food industry in Nigeria", "expect": "answer_or_synthesis"},
-  {"message": "Explain regression analysis, and also give me a jollof rice recipe", "expect": "partial", "must_contain": ["regression"], "must_not_contain": ["tomato", "scotch bonnet", "parboil"]}
+  {"message": "Explain regression analysis, and also give me a jollof rice recipe", "expect": "partial", "must_contain": ["regression"], "must_not_contain": ["tomato", "scotch bonnet", "parboil", "bay leaf", "pepper"]}
 ]
