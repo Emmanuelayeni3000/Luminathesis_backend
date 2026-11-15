@@ -105,10 +105,12 @@ def _chat(model: str, temperature: float, **kwargs) -> ChatGroq:
 def make_llm(model: str, temperature: float, max_retries: int = 2):
     """Runnable for plain `.ainvoke(messages)` with model fallback."""
     primary_id = resolve_model(model)
-    primary = _chat(primary_id, temperature, max_retries=max_retries)
     fb_id = _fallback_for(primary_id)
     if not fb_id:
-        return primary
+        return _chat(primary_id, temperature, max_retries=max_retries)
+    # Groq's per-model token-per-minute limits are separate buckets, so on a 429 it is far
+    # faster to switch models than to sleep and retry: the primary doesn't retry itself.
+    primary = _chat(primary_id, temperature, max_retries=0)
     return primary.with_fallbacks(
         [_chat(fb_id, temperature, max_retries=max_retries)],
         exceptions_to_handle=FALLBACK_EXCEPTIONS,
@@ -118,9 +120,10 @@ def make_llm(model: str, temperature: float, max_retries: int = 2):
 def make_structured_llm(model: str, schema, temperature: float, method: str = "json_mode"):
     """Runnable that returns `schema` instances, with model fallback."""
     primary_id = resolve_model(model)
-    primary = _chat(primary_id, temperature).with_structured_output(schema, method=method)
     fb_id = _fallback_for(primary_id)
     if not fb_id:
-        return primary
+        return _chat(primary_id, temperature).with_structured_output(schema, method=method)
+    # See make_llm: fail over on 429 immediately instead of sleeping and retrying.
+    primary = _chat(primary_id, temperature, max_retries=0).with_structured_output(schema, method=method)
     fallback = _chat(fb_id, temperature).with_structured_output(schema, method=method)
     return primary.with_fallbacks([fallback], exceptions_to_handle=FALLBACK_EXCEPTIONS)
