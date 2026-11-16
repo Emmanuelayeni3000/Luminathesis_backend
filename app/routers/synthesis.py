@@ -341,7 +341,20 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
             "for this exact query. Entries marked 'Source: harvested_literature' are abstracts collected when "
             "this session was created. Synthesize all of these "
             "alongside any uploaded-document context to recommend relevant literature, citing titles and years."
+            "\nSTRICT: Only name, list or describe papers that literally appear in the RETRIEVED CONTEXT. "
+            "Never add papers, authors, years, journals or findings from memory — invented references are "
+            "academic misconduct for the user."
         )
+        has_papers = bool(live_papers) or any(
+            item.get("source") == HARVESTED_LITERATURE_SOURCE for item in context_items
+        )
+        if not has_papers:
+            extra_notes += (
+                "\n\nNOTE — NO PAPERS FOUND: The literature databases returned no results for this query just now. "
+                "Do NOT list, name or describe ANY specific paper, author, year or study. Say plainly that the live "
+                "literature search returned no results at the moment, then help the user search themselves: give "
+                "precise search strings/keywords, the best databases for this field, and inclusion criteria."
+            )
     extra_notes += truncated_notice
 
     user_name = body.user_name or "Scholar"

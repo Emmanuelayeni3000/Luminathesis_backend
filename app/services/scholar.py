@@ -29,6 +29,12 @@ OPENALEX_SEARCH_URL = "https://api.openalex.org/works"
 OPENALEX_HEADERS = {"User-Agent": "LuminaThesis/1.0 (https://github.com/Emmanuelayeni3000)"}
 
 
+def _openalex_params(params: dict) -> dict:
+    """Attach the OpenAlex API key when configured (required for real usage since Feb 2026)."""
+    key = get_settings().openalex_api_key
+    return {**params, "api_key": key} if key else params
+
+
 def _reconstruct_abstract(inverted_index: Optional[dict]) -> str:
     """OpenAlex stores abstracts as {word: [positions]} — rebuild plain text."""
     if not inverted_index:
@@ -244,7 +250,7 @@ async def _harvest_openalex(clean_query: str, target: int) -> list[dict]:
             }
 
             try:
-                resp = await client.get(OPENALEX_SEARCH_URL, params=params, headers=OPENALEX_HEADERS)
+                resp = await client.get(OPENALEX_SEARCH_URL, params=_openalex_params(params), headers=OPENALEX_HEADERS)
                 resp.raise_for_status()
             except httpx.HTTPError as e:
                 logger.error("OpenAlex request error: %s", e)
@@ -364,7 +370,7 @@ async def _quick_search_openalex(query: str, limit: int) -> list[dict]:
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(OPENALEX_SEARCH_URL, params=params, headers=OPENALEX_HEADERS)
+            resp = await client.get(OPENALEX_SEARCH_URL, params=_openalex_params(params), headers=OPENALEX_HEADERS)
             resp.raise_for_status()
     except httpx.HTTPError as e:
         logger.warning("OpenAlex quick_search failed: %s", e)

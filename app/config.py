@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     llama_cloud_api_key: str = ""
     semantic_scholar_api_key: str = ""
+    # OpenAlex requires a free API key since Feb 2026 (openalex.org/settings/api);
+    # anonymous use gets a tiny shared per-IP budget that hosted Spaces exhaust.
+    openalex_api_key: str = ""
     supabase_url: str = ""
     supabase_service_role_key: str = ""
 
