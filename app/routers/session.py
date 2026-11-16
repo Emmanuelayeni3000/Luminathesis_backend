@@ -104,6 +104,7 @@ async def initialize_session(body: InitSessionRequest) -> InitSessionResponse:
         raise HTTPException(status_code=422, detail=OUT_OF_SCOPE_TOPIC_MESSAGE)
 
     all_chunks: list[dict] = []
+    document_text = ""  # start of the user's uploaded work, used to steer the literature search
     files_parsed = 0
     files_failed: list[str] = []
 
@@ -116,6 +117,8 @@ async def initialize_session(body: InitSessionRequest) -> InitSessionResponse:
                     chunks = chunk_text(doc["text"], source=doc["source_url"])
                     all_chunks.extend(chunks)
                     files_parsed += 1
+                    if not document_text:
+                        document_text = doc["text"]
                 else:
                     files_failed.append(_friendly_filename(doc["source_url"]))
         except Exception as e:
@@ -132,7 +135,7 @@ async def initialize_session(body: InitSessionRequest) -> InitSessionResponse:
         logger.info("Literature already harvested for session %s — skipping re-harvest", body.session_id)
     else:
         try:
-            papers = await harvest_abstracts(body.topic)
+            papers = await harvest_abstracts(body.topic, document_text)
             abstracts_harvested = len(papers)
 
             scholar_text = format_abstracts_as_context(papers)
@@ -151,10 +154,10 @@ async def initialize_session(body: InitSessionRequest) -> InitSessionResponse:
         try:
             chunks_stored = await store_chunks(body.session_id, all_chunks)
         except Exception as e:
-            logger.error("Vector storage error: %s", e)
+            logger.exception("Vector storage error: %s", e)
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to store document vectors: {e}",
+                detail="We couldn't index your documents just now. Please try again in a moment.",
             )
 
     literature_note = (

@@ -7,6 +7,7 @@ Fully async — uses httpx with retries.
 """
 import asyncio
 import logging
+import re
 from itertools import zip_longest
 from typing import Optional
 
@@ -65,25 +66,55 @@ def _merge_unique(*sources: list[dict], limit: int) -> list[dict]:
     return merged
 
 
-async def harvest_abstracts(topic: str) -> list[dict]:
+DOCUMENT_EXCERPT_CHARS = 4000
+
+_QUERY_SYSTEM_PROMPT = (
+    "You are a search query optimizer for academic literature databases. "
+    "Return 3-6 core academic keywords describing the RESEARCH SUBJECT, separated by spaces. "
+    "No quotes, punctuation, explanation or reasoning.\n"
+    "The user's input may be a request about their work rather than a subject "
+    "(e.g. 'recommend PhD topics from my BSc project', 'improve my chapter 2'). "
+    "In that case take the subject from the DOCUMENT EXCERPT (title, abstract, objectives), "
+    "never from words like thesis, project, BSc, PhD, topics or recommend."
+)
+
+
+def _clean_keywords(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"[\"'`*_#:,;.()\[\]]", " ", text)
+    return " ".join(text.split()[:8])
+
+
+async def build_search_query(topic: str, document_text: str = "") -> str:
+    """Distill the user's topic (plus any uploaded document) into a keyword query."""
+    settings = get_settings()
+    content = f"USER INPUT:\n{topic}"
+    if document_text.strip():
+        content += f"\n\nDOCUMENT EXCERPT:\n{document_text[:DOCUMENT_EXCERPT_CHARS]}"
+    try:
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from app.services.llm import make_llm
+        llm = make_llm(settings.editor_model, temperature=0.0)
+        resp = await llm.ainvoke([SystemMessage(content=_QUERY_SYSTEM_PROMPT), HumanMessage(content=content)])
+        query = _clean_keywords(resp.content)
+        if query:
+            return query
+    except Exception as e:
+        logger.warning("Keyword extraction failed, falling back to raw topic: %s", e)
+    return topic[:100]
+
+
+async def harvest_abstracts(topic: str, document_text: str = "") -> list[dict]:
     """
     Query Semantic Scholar and OpenAlex in parallel and return up to
     `settings.scholar_target_count` deduplicated papers with non-empty
-    abstract text.
+    abstract text. `document_text` (the user's uploaded work) is used to find
+    the research subject when `topic` is a request rather than a subject.
     """
     settings = get_settings()
 
-    # 1. Distill conversational topic into keywords
-    try:
-        from langchain_groq import ChatGroq
-        from langchain_core.messages import SystemMessage, HumanMessage
-        llm = ChatGroq(model=settings.editor_model, temperature=0.0, api_key=settings.groq_api_key)
-        sys_msg = "You are a search query optimizer. Extract 3-5 core academic keywords from the user's input. Return ONLY the keywords separated by spaces. Do not use quotes or punctuation."
-        resp = await llm.ainvoke([SystemMessage(content=sys_msg), HumanMessage(content=topic)])
-        clean_query = resp.content.strip()
-    except Exception as e:
-        logger.warning("Keyword extraction failed, falling back to raw topic: %s", e)
-        clean_query = topic[:100]
+    # 1. Distill conversational topic (+ uploaded document) into keywords
+    clean_query = await build_search_query(topic, document_text)
 
     logger.info("Using clean query for literature search: '%s'", clean_query)
 
