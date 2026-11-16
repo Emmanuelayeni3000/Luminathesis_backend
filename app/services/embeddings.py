@@ -130,7 +130,6 @@ async def store_chunks(session_id: str, chunks: list[dict]) -> int:
                     )
             break
         except Exception as e:
-            import asyncio
             logger.warning("DB insert failed on attempt %d: %s", attempt + 1, e)
             if attempt == max_retries - 1:
                 logger.error("Failed to store chunks after %d attempts", max_retries)
@@ -182,7 +181,6 @@ async def similarity_search(
                 results = await rows.fetchall()
             break
         except Exception as e:
-            import asyncio
             logger.warning("DB similarity_search failed on attempt %d: %s", attempt + 1, e)
             if attempt == max_retries - 1:
                 logger.error("Failed to query database in similarity_search after %d attempts", max_retries)
@@ -265,7 +263,6 @@ async def similarity_search_with_sources(
                 results = await rows.fetchall()
             break
         except Exception as e:
-            import asyncio
             logger.warning("DB similarity_search_with_sources failed on attempt %d: %s", attempt + 1, e)
             if attempt == max_retries - 1:
                 logger.error("Failed to query database in similarity_search_with_sources after %d attempts", max_retries)
