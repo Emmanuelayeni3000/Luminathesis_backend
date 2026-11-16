@@ -44,7 +44,7 @@ router = APIRouter()
 MAX_CHAT_MESSAGE_CHARS = 12000
 
 # Upper bound on the live Semantic Scholar/OpenAlex lookup during chat.
-LIVE_SEARCH_TIMEOUT_SECONDS = 8.0
+LIVE_SEARCH_TIMEOUT_SECONDS = 12.0
 
 # Cooldown between /synthesize runs for the same session — this pipeline
 # makes several Groq calls plus a literature harvest, so accidental repeat
@@ -337,7 +337,7 @@ async def chat_advisor(body: ChatRequest) -> ChatResponse:
     if intent == "literature_search":
         extra_notes += (
             "\n\nNOTE — LIVE LITERATURE SEARCH: Some RETRIEVED CONTEXT entries are marked 'Source: Semantic "
-            "Scholar (live search)' or 'Source: OpenAlex (live search)' — these are real-time results fetched "
+            "Scholar (live search)', 'Source: OpenAlex (live search)' or 'Source: Crossref (live search)' — these are real-time results fetched "
             "for this exact query. Entries marked 'Source: harvested_literature' are abstracts collected when "
             "this session was created. Synthesize all of these "
             "alongside any uploaded-document context to recommend relevant literature, citing titles and years."

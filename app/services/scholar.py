@@ -72,6 +72,64 @@ def _merge_unique(*sources: list[dict], limit: int) -> list[dict]:
     return merged
 
 
+CROSSREF_SEARCH_URL = "https://api.crossref.org/works"
+CROSSREF_HEADERS = {"User-Agent": "LuminaThesis/1.0 (https://github.com/Emmanuelayeni3000)"}
+
+
+def _strip_jats(text: str) -> str:
+    """Crossref abstracts are JATS XML — drop tags and a leading 'Abstract' heading."""
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    text = re.sub(r"^\s*abstract\s*[:.]?\s*", "", " ".join(text.split()), flags=re.IGNORECASE)
+    return text.strip()
+
+
+async def _search_crossref(query: str, limit: int, timeout: float = 10.0) -> list[dict]:
+    """
+    Keyless Crossref search (only works that carry an abstract). Used alongside
+    Semantic Scholar / OpenAlex because it needs no API key and isn't subject to
+    the per-IP anonymous budgets that shared hosting exhausts.
+    """
+    params = {
+        "query.bibliographic": query[:300],
+        "rows": min(max(limit * 2, 10), 100),
+        "filter": "has-abstract:true",
+        "select": "DOI,title,abstract,author,issued,is-referenced-by-count",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(CROSSREF_SEARCH_URL, params=params, headers=CROSSREF_HEADERS)
+            resp.raise_for_status()
+    except httpx.HTTPError as e:
+        logger.warning("Crossref search failed: %s", e)
+        return []
+
+    results = []
+    for item in resp.json().get("message", {}).get("items", []):
+        abstract = _strip_jats(item.get("abstract", ""))
+        title = " ".join((item.get("title") or [""])[0].split())
+        if len(abstract) < 80 or not title:
+            continue
+        date_parts = ((item.get("issued") or {}).get("date-parts") or [[None]])[0]
+        authors = [
+            " ".join(p for p in (a.get("given", ""), a.get("family", "")) if p)
+            for a in (item.get("author") or [])
+        ]
+        results.append(
+            {
+                "title": title,
+                "abstract": abstract,
+                "year": date_parts[0] if date_parts else None,
+                "authors": [a for a in authors if a],
+                "citation_count": item.get("is-referenced-by-count", 0),
+                "doi": item.get("DOI", ""),
+                "source": "Crossref",
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
 DOCUMENT_EXCERPT_CHARS = 4000
 
 _QUERY_SYSTEM_PROMPT = (
@@ -126,29 +184,27 @@ async def harvest_abstracts(topic: str, document_text: str = "") -> list[dict]:
 
     target = settings.scholar_target_count
 
+    names = ("Semantic Scholar", "OpenAlex", "Crossref")
     results = await asyncio.gather(
         _harvest_semantic_scholar(clean_query, target, settings),
         _harvest_openalex(clean_query, target),
+        _search_crossref(clean_query, target, timeout=30.0),
         return_exceptions=True,
     )
 
-    semantic_papers: list[dict] = []
-    openalex_papers: list[dict] = []
-    for source_name, result in zip(("Semantic Scholar", "OpenAlex"), results):
+    per_source: dict[str, list[dict]] = {}
+    for source_name, result in zip(names, results):
         if isinstance(result, Exception):
             logger.error("%s harvest failed: %s", source_name, result)
-        elif source_name == "Semantic Scholar":
-            semantic_papers = result
+            per_source[source_name] = []
         else:
-            openalex_papers = result
+            per_source[source_name] = result
 
-    merged = _merge_unique(semantic_papers, openalex_papers, limit=target)
+    merged = _merge_unique(*per_source.values(), limit=target)
 
     logger.info(
-        "Harvested %d abstracts (%d Semantic Scholar + %d OpenAlex, %d unique) for topic: %s",
-        len(semantic_papers) + len(openalex_papers),
-        len(semantic_papers),
-        len(openalex_papers),
+        "Harvested %s → %d unique for topic: %s",
+        ", ".join(f"{n}: {len(p)}" for n, p in per_source.items()),
         len(merged),
         topic,
     )
@@ -301,21 +357,24 @@ async def quick_search(query: str, limit: int = 5) -> list[dict]:
     """
     settings = get_settings()
 
+    names = ("Semantic Scholar", "OpenAlex", "Crossref")
     results = await asyncio.gather(
         _quick_search_semantic_scholar(query, limit, settings),
         _quick_search_openalex(query, limit),
+        _search_crossref(query, limit, timeout=10.0),
         return_exceptions=True,
     )
 
-    semantic_results = results[0] if isinstance(results[0], list) else []
-    openalex_results = results[1] if isinstance(results[1], list) else []
+    groups: list[list[dict]] = []
+    for name, result in zip(names, results):
+        if isinstance(result, Exception):
+            logger.warning("%s quick_search failed: %s", name, result)
+            groups.append([])
+        else:
+            groups.append(result)
+    logger.info("quick_search results: %s", ", ".join(f"{n}: {len(g)}" for n, g in zip(names, groups)))
 
-    if isinstance(results[0], Exception):
-        logger.warning("Semantic Scholar quick_search failed: %s", results[0])
-    if isinstance(results[1], Exception):
-        logger.warning("OpenAlex quick_search failed: %s", results[1])
-
-    return _merge_unique(semantic_results, openalex_results, limit=limit)
+    return _merge_unique(*groups, limit=limit)
 
 
 async def _quick_search_semantic_scholar(query: str, limit: int, settings) -> list[dict]:
